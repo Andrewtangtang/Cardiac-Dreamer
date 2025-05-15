@@ -54,14 +54,12 @@ class GuidanceLayer(nn.Module):
     def forward(
         self,
         features: torch.Tensor,
-        query: torch.Tensor = None  # Keep query for backward compatibility, but it's not used
     ) -> torch.Tensor:
         """
         Forward pass through the guidance layer
         
         Args:
             features: Feature tensor from DreamerChannel [batch_size, feature_dim]
-            query: Unused parameter kept for backward compatibility
             
         Returns:
             actions: Predicted 6-DOF actions [batch_size, 6]
@@ -95,7 +93,6 @@ def pool_features(channel_tokens: torch.Tensor) -> torch.Tensor:
 
 def get_guidance_layer(
     feature_dim: int = 512,
-    query_dim: int = 0,  # Kept for backward compatibility
     hidden_dim: int = 1024
 ) -> GuidanceLayer:
     """
@@ -103,7 +100,6 @@ def get_guidance_layer(
     
     Args:
         feature_dim: Dimension of input feature vector
-        query_dim: Unused parameter kept for backward compatibility
         hidden_dim: Dimension of hidden layer
         
     Returns:
