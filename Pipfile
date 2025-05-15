@@ -1,0 +1,20 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+numpy = "<2"
+pandas = "*"
+pillow = "*"
+matplotlib = "*"
+tqdm = "*"
+jupyterlab = "*"
+torch = "==2.2.2"
+torchvision = "==0.17.2"
+torchaudio = "==2.2.2"
+
+[dev-packages]
+
+[requires]
+python_version = "3.10"
