@@ -9,8 +9,11 @@
 
 ```text
 ├── README.md               # ← 你正在看
-├── requirements.txt        # 同 baseline
+├── Pipfile                 # 依賴管理
+├── Pipfile.lock           
 ├── data/                   # raw / processed
+│   ├── raw/                  # 原始數據
+│   └── processed/            # 處理後數據
 ├── notebooks/
 │   ├── 01_channel_vis.ipynb  # 通道 token 可視化
 │   └── 90_report.ipynb
@@ -22,12 +25,14 @@
 │       └── base.yaml
 ├── src/
 │   ├── models/
-│   │   ├── backbone.py       # 共用 ResNet34
-│   │   ├── dreamer_channel.py# ★ 512 token 版本
-│   │   ├── guidance.py       # 共用 (512+q → 1024 → 512 → 6)
-│   │   └── system.py         # LitModule   token_type 驅動不同 dreamer
-│   └── train.py
-└── scripts/run_channel.sh
+│   │   ├── backbone.py       # ResNet34 特徵提取器
+│   │   ├── dreamer_channel.py# ★ 512 通道 token Transformer
+│   │   ├── guidance.py       # 简化版MLP (512 → 1024 → 512 → 6)
+│   │   └── system.py         # PyTorch Lightning 系統模組
+│   └── train.py              # 主訓練腳本
+└── outputs/                  # 模型輸出目錄
+    ├── checkpoints/            # 模型檢查點
+    └── logs/                   # TensorBoard 日誌
 ```
 
 ---
@@ -40,18 +45,16 @@ flowchart TB
     B -->|flatten 3rd dim| Tok512[B,512,49]
     Tok512 -->|permute| Tok[B,512,49]
     Tok -->|Linear 49→768| TokD[B,512,768]
-    act[6‑DoF] -->|Linear 6→768| CLS[B,1,768]
-    CLS --> Concat
+    act[6-DoF] -->|Linear 6→768| CLS[B,1,768]
+    CLS --> Concat[Concat]
     TokD --> Concat
-    Concat[[B,513,768]\n+ pos_emb] --> Enc(Transformer L=6 H=12)
-    Enc --> Out[[B,513,768]]
-    Out -->|index 1‑512| Reshape
+    Concat -->|"[B,513,768] + pos_emb"| Enc[Transformer L=6 H=12]
+    Enc --> Out[B,513,768]
+    Out -->|index 1-512| Reshape[Reshape]
     Reshape -->|Linear 768→512| Map[B,512,49]
     Map -->|view| Map2D[B,512,7,7]
     Map2D --> GAP[Global AvgPool] --> F[B,512]
-    qi[plane query] -->|concat| Fuse
-    F --> Fuse
-    Fuse --> MLP[Guidance MLP] --> a_hat[Pred 6‑DoF]
+    F --> MLP[Guidance MLP] --> a_hat[Pred 6-DoF]
 ```
 
 **重點**
@@ -59,7 +62,7 @@ flowchart TB
 1. `token_type=channel` → **token 數 512**，每 token 向量長 49。
 2. Positional encoding `pos_emb` shape `[1,513,768]`：index 0 給 Action‑CLS，其餘 1‑512 為 channel‑ID。
 3. Self‑Attention 複雜度 ≈ 262 k 關係 → 建議啟用 **Flash‑Attention** 或減 batch。
-4. Guidance MLP 與 baseline 相同：`512+q_dim → 1024 → 512 → 6`。
+4. Guidance MLP 簡化為：`512 → 1024 → 512 → 6`，不再使用查詢向量。
 
 ---
 
