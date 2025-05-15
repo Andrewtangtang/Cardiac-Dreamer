@@ -1,0 +1,72 @@
+# Python 緩存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 環境和虛擬環境
+.env
+.venv
+env/
+venv/
+ENV/
+.virtualenvs/
+
+# 發布和打包
+dist/
+build/
+*.egg-info/
+
+# PyCharm、VS Code 和其他 IDE 文件
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# PyTorch 特定文件
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.h5
+*.pb
+*.npy
+*.npz
+
+# 日誌和輸出文件
+logs/
+*.log
+*.out
+*.err
+results/
+runs/
+
+# 數據文件 (取決於具體需求，可能需要保留一些示例數據)
+data/raw/
+data/processed/
+# 保留空白 .gitkeep 文件以保持目錄結構
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Cursor 編輯器特定文件
+.cursor/
+
+# 系統文件
+.DS_Store
+Thumbs.db
+
+# 其他專案特定文件
+wandb/
+lightning_logs/
+tensorboard/
+# 訓練過程產生的測試或暫存圖片
+**/temp_images/
+/models/
+/checkpoints/ 
