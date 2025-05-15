@@ -250,6 +250,21 @@ def get_dreamer_channel(
     )
 
 
+def pool_features(channel_tokens: torch.Tensor) -> torch.Tensor:
+    """
+    Pools channel tokens to get a fixed-size feature vector
+    
+    Args:
+        channel_tokens: Channel tokens from DreamerChannel [batch_size, 512, feature_dim]
+        
+    Returns:
+        pooled_features: Pooled feature vector [batch_size, 512]
+    """
+    # Global average pooling across the spatial dimension
+    # [B, 512, feature_dim] -> [B, 512]
+    return torch.mean(channel_tokens, dim=2)
+
+
 if __name__ == "__main__":
     # Test DreamerChannel model with backbone
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
