@@ -169,11 +169,14 @@ class DreamerChannel(nn.Module):
         # Projection for channel token reconstruction (not needed for the CLS token)
         self.output_projection = nn.Linear(d_model, feature_dim)
         
+        # New: Projection for next frame feature prediction
+        self.next_frame_projection = nn.Linear(d_model, feature_dim)
+        
     def forward(
         self, 
         channel_tokens: torch.Tensor, 
         action: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass
 
@@ -184,6 +187,7 @@ class DreamerChannel(nn.Module):
         Returns:
             transformed_channel_tokens: Transformed channel tokens [batch_size, 512, feature_dim]
             full_sequence: Full sequence of transformed tokens [batch_size, 513, d_model]
+            predicted_next_features: Predicted next frame features [batch_size, 512, feature_dim]
         """
         batch_size = channel_tokens.shape[0]
         
@@ -218,7 +222,15 @@ class DreamerChannel(nn.Module):
         # [B, 512, d_model] -> [B, 512, feature_dim]
         reconstructed_channel_tokens = self.output_projection(transformed_channel_tokens)
         
-        return reconstructed_channel_tokens, transformed_sequence
+        # New: Project action token to predict next frame features
+        # [B, 1, d_model] -> [B, 1, feature_dim]
+        next_frame_features = self.next_frame_projection(transformed_action_token)
+        
+        # Expand to match channel dimensions
+        # [B, 1, feature_dim] -> [B, 512, feature_dim]
+        predicted_next_features = next_frame_features.expand(-1, 512, -1)
+        
+        return reconstructed_channel_tokens, transformed_sequence, predicted_next_features
 
 
 def get_dreamer_channel(
@@ -312,11 +324,12 @@ if __name__ == "__main__":
         print(f"  Channel tokens: {channel_tokens.shape}")
         
         # Forward pass through DreamerChannel
-        reconstructed_channels, full_sequence = dreamer(channel_tokens, action)
+        reconstructed_channels, full_sequence, predicted_next_features = dreamer(channel_tokens, action)
         
         print(f"\nOutput shapes:")
         print(f"  Reconstructed channels: {reconstructed_channels.shape}")
         print(f"  Full sequence: {full_sequence.shape}")
+        print(f"  Predicted next features: {predicted_next_features.shape}")  # New output
         
         # Check that the shapes are as expected
         assert reconstructed_channels.shape == (batch_size, 512, 49), \
@@ -324,6 +337,23 @@ if __name__ == "__main__":
         
         assert full_sequence.shape == (batch_size, 513, 768), \
             f"Expected full_sequence shape {(batch_size, 513, 768)}, got {full_sequence.shape}"
+            
+        assert predicted_next_features.shape == (batch_size, 512, 49), \
+            f"Expected predicted_next_features shape {(batch_size, 512, 49)}, got {predicted_next_features.shape}"
+        
+        # Test pooling on both current and next features
+        pooled_current = pool_features(reconstructed_channels)
+        pooled_next = pool_features(predicted_next_features)
+        
+        print(f"\nPooled feature shapes:")
+        print(f"  Pooled current features: {pooled_current.shape}")
+        print(f"  Pooled next features: {pooled_next.shape}")
+        
+        assert pooled_current.shape == (batch_size, 512), \
+            f"Expected pooled_current shape {(batch_size, 512)}, got {pooled_current.shape}"
+            
+        assert pooled_next.shape == (batch_size, 512), \
+            f"Expected pooled_next shape {(batch_size, 512)}, got {pooled_next.shape}"
         
         print("\nTest passed! All shapes match expected dimensions.") 
         
