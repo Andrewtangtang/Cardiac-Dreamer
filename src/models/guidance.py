@@ -1,4 +1,4 @@
-# 共用 (512+q → 1024 → 512 → 6)
+# Shared architecture (512+q → 1024 → 512 → 6)
 import torch
 import torch.nn as nn
 import os

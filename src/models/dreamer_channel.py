@@ -1,5 +1,5 @@
-# ★ 512 token 版本
-# 在這裡加入 Dreamer Channel 模型的定義 
+# 512 token version
+# Dreamer Channel model definition
 
 import torch
 import torch.nn as nn
@@ -125,7 +125,7 @@ class DreamerChannel(nn.Module):
         feature_dim: int = 49,
         dropout: float = 0.1,
         activation: str = "gelu",
-        use_flash_attn: bool = False  # 默認設為False避免警告
+        use_flash_attn: bool = False  # Default to False to avoid warnings
     ):
         super().__init__()
         
@@ -150,21 +150,21 @@ class DreamerChannel(nn.Module):
             dropout=dropout,
             activation=activation,
             batch_first=True,
-            norm_first=False  # 改為False以解決nested tensor警告
+            norm_first=False  # Set to False to resolve nested tensor warning
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer=encoder_layer,
             num_layers=num_layers
         )
         
-        # 僅當明確需要且環境支持時才啟用flash attention
+        # Only enable flash attention when explicitly needed and environment supports it
         if use_flash_attn:
             try:
                 from flash_attn.modules.mha import FlashSelfAttention
-                print("使用Flash Attention提高大型token集合的性能")
-                # 這裡會實際實現Flash Attention
+                print("Using Flash Attention to improve performance for large token sets")
+                # Flash Attention implementation would go here
             except ImportError:
-                print("警告: 未找到flash_attn套件。使用標準注意力機制。")
+                print("Warning: flash_attn package not found. Using standard attention mechanism.")
         
         # Projection for channel token reconstruction (not needed for the CLS token)
         self.output_projection = nn.Linear(d_model, feature_dim)
@@ -238,7 +238,7 @@ def get_dreamer_channel(
     nhead: int = 12,
     num_layers: int = 6,
     feature_dim: int = 49,
-    use_flash_attn: bool = False  # 默認設為False避免警告
+    use_flash_attn: bool = False  # Default to False to avoid warnings
 ) -> DreamerChannel:
     """
     Helper function to create a DreamerChannel model
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         nhead=12,
         num_layers=6,
         feature_dim=49,
-        use_flash_attn=False  # 已設定為False
+        use_flash_attn=False  # Default to False
     ).to(device)
     
     print(f"Backbone model created")

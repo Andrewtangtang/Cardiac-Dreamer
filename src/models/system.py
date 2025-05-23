@@ -1,5 +1,5 @@
-# LitModule   token_type 驅動不同 dreamer
-# 在這裡加入 PyTorch Lightning System 模組的定義 
+# LitModule   token_type drives different dreamer
+# PyTorch Lightning System module definition
 
 import os
 import sys
@@ -161,43 +161,43 @@ class CardiacDreamerSystem(pl.LightningModule):
     
     def compute_losses(
         self, 
-        predicted_action_composed: torch.Tensor,  # a_t1_prime_composed (主要任務輸出)
-        target_action_composed_gt: torch.Tensor,    # a_t1_prime_gt (主要任務目標)
+        predicted_action_composed: torch.Tensor,  # Model's predicted composed action
+        at1_6dof_gt: torch.Tensor,               # Ground truth at1_6dof from JSON (main task target)
         reconstructed_channels_t1: torch.Tensor,
         original_channels_t1: torch.Tensor,
-        a_prime_t2_hat: torch.Tensor,             # Predicted action at t2 (輔助任務輸出)
-        target_a_t2_prime_gt: torch.Tensor        # a_t2_prime_gt (輔助任務目標)
+        a_prime_t2_hat: torch.Tensor,            # Model's predicted t2 action
+        at2_6dof_gt: torch.Tensor                # Ground truth at2_6dof from JSON (auxiliary task target)
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Computes losses with configurable weights for main and auxiliary tasks.
         
-        Main task: Predict final composed action at1 (corresponds to figure's at1 vs ât1)
-        Auxiliary tasks: t2 action prediction and latent reconstruction (for training stability)
+        Main task: Predict at1_6dof from image and action change (predicted_action_composed vs at1_6dof_gt)
+        Auxiliary tasks: t2 action prediction (a_prime_t2_hat vs at2_6dof_gt) and latent reconstruction
         """
-        # 主要任務損失 - L_SmoothL1(at1, ât1) 對應圖片中的公式
-        main_task_loss = self.smooth_l1_loss(predicted_action_composed, target_action_composed_gt)
+        # Main task loss - L_SmoothL1(predicted_action_composed, at1_6dof_gt)
+        main_task_loss = self.smooth_l1_loss(predicted_action_composed, at1_6dof_gt)
         
-        # 輔助任務損失 - 幫助訓練過程
-        aux_t2_action_loss = self.smooth_l1_loss(a_prime_t2_hat, target_a_t2_prime_gt)
+        # Auxiliary task losses - help with training process
+        aux_t2_action_loss = self.smooth_l1_loss(a_prime_t2_hat, at2_6dof_gt)
         aux_latent_loss = F.mse_loss(reconstructed_channels_t1, original_channels_t1)
         
-        # 根據配置組合損失
+        # Combine losses based on configuration
         if self.hparams.primary_task_only:
-            # 只使用主要任務損失 - 對應圖片中的評估方式
+            # Only use main task loss - corresponds to evaluation mode
             total_loss = main_task_loss
             combined_action_loss = main_task_loss
         else:
-            # 完整訓練損失 - 包含輔助任務幫助訓練
+            # Full training loss - includes auxiliary tasks to help training
             combined_action_loss = main_task_loss + self.lambda_t2_action * aux_t2_action_loss
             total_loss = combined_action_loss + self.lambda_latent * aux_latent_loss
         
         loss_dict = {
             "total_loss": total_loss,
-            "main_task_loss": main_task_loss,  # 這是您關心的主要指標
+            "main_task_loss": main_task_loss,  # This is the main metric we care about
             "combined_action_loss": combined_action_loss,
             "aux_t2_action_loss": aux_t2_action_loss,
             "aux_latent_loss": aux_latent_loss,
-            # 保持向後兼容性
+            # Maintain backward compatibility
             "action_loss_t1_prime": main_task_loss,
             "action_loss_t2_prime": aux_t2_action_loss,
             "latent_loss": aux_latent_loss
@@ -211,8 +211,8 @@ class CardiacDreamerSystem(pl.LightningModule):
             return feature_map_t1_original.reshape(image_t1.shape[0], 512, -1).detach()
 
     def training_step(self, batch: Tuple[torch.Tensor, ...], batch_idx: int) -> torch.Tensor:
-        # Batch structure: (image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt)
-        image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt = batch
+        # Batch structure: (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)
+        image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt = batch
         
         system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
@@ -224,15 +224,15 @@ class CardiacDreamerSystem(pl.LightningModule):
         
         total_loss, loss_dict = self.compute_losses(
             predicted_composed_action, 
-            a_t1_prime_gt, 
+            at1_6dof_gt,  # Main task: predict at1_6dof
             reconstructed_channels_t1,
             original_channels_t1,
             a_prime_t2_hat,
-            a_t2_prime_gt 
+            at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
         self.log("train_total_loss", total_loss, prog_bar=True, on_step=True, on_epoch=True)
-        self.log("train_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=True, on_epoch=True)  # 主要關注指標
+        self.log("train_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=True, on_epoch=True)  # Main metric to monitor
         self.log("train_combined_action_loss", loss_dict["combined_action_loss"], on_step=True, on_epoch=True)
         self.log("train_action_loss_t1p", loss_dict["action_loss_t1_prime"], on_step=False, on_epoch=True)
         self.log("train_action_loss_t2p", loss_dict["action_loss_t2_prime"], on_step=False, on_epoch=True)
@@ -241,7 +241,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         return total_loss
     
     def validation_step(self, batch: Tuple[torch.Tensor, ...], batch_idx: int) -> torch.Tensor:
-        image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt = batch
+        image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt = batch
         system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
         predicted_composed_action = system_outputs["predicted_action_composed"]
@@ -252,15 +252,15 @@ class CardiacDreamerSystem(pl.LightningModule):
             
         total_loss, loss_dict = self.compute_losses(
             predicted_composed_action, 
-            a_t1_prime_gt,
+            at1_6dof_gt,  # Main task: predict at1_6dof
             reconstructed_channels_t1,
             original_channels_t1,
             a_prime_t2_hat,
-            a_t2_prime_gt
+            at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
         self.log("val_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
-        self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)  # 主要關注指標
+        self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)  # Main metric to monitor
         self.log("val_combined_action_loss", loss_dict["combined_action_loss"], on_step=False, on_epoch=True)
         self.log("val_action_loss_t1p", loss_dict["action_loss_t1_prime"], on_step=False, on_epoch=True)
         self.log("val_action_loss_t2p", loss_dict["action_loss_t2_prime"], on_step=False, on_epoch=True)
@@ -269,7 +269,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         return total_loss
     
     def test_step(self, batch: Tuple[torch.Tensor, ...], batch_idx: int) -> Dict[str, torch.Tensor]:
-        image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt = batch
+        image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt = batch
         system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
         predicted_composed_action = system_outputs["predicted_action_composed"]
@@ -280,15 +280,15 @@ class CardiacDreamerSystem(pl.LightningModule):
             
         total_loss, loss_dict = self.compute_losses(
             predicted_composed_action, 
-            a_t1_prime_gt,
+            at1_6dof_gt,  # Main task: predict at1_6dof
             reconstructed_channels_t1,
             original_channels_t1,
             a_prime_t2_hat,
-            a_t2_prime_gt
+            at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
         # For reporting, calculate MSE of the primary composed action prediction
-        mse_composed_action = F.mse_loss(predicted_composed_action, a_t1_prime_gt)
+        mse_composed_action = F.mse_loss(predicted_composed_action, at1_6dof_gt)
         
         self.log("test_total_loss", total_loss, on_step=False, on_epoch=True)
         self.log("test_combined_action_loss", loss_dict["combined_action_loss"], on_step=False, on_epoch=True)
@@ -301,9 +301,9 @@ class CardiacDreamerSystem(pl.LightningModule):
             "test_total_loss": total_loss,
             "test_mse_composed_action": mse_composed_action,
             "predicted_action_composed": predicted_composed_action,
-            "target_action_composed_gt": a_t1_prime_gt,
+            "target_action_composed_gt": at1_6dof_gt,
             "a_prime_t2_hat": a_prime_t2_hat, # Include for potential analysis
-            "target_a_t2_prime_gt": a_t2_prime_gt # Include for potential analysis
+            "target_a_t2_prime_gt": at2_6dof_gt # Include for potential analysis
         }
     
     def test_epoch_end(self, outputs: List[Dict[str, torch.Tensor]]):
@@ -331,6 +331,7 @@ def get_cardiac_dreamer_system(
     num_layers: int = 6,
     feature_dim: int = 49, 
     lr: float = 1e-4,
+    weight_decay: float = 1e-5,
     lambda_latent: float = 0.2,
     lambda_t2_action: float = 1.0,
     smooth_l1_beta: float = 1.0, # Added beta here
@@ -346,6 +347,7 @@ def get_cardiac_dreamer_system(
         num_layers=num_layers,
         feature_dim=feature_dim,
         lr=lr,
+        weight_decay=weight_decay,
         lambda_latent=lambda_latent,
         lambda_t2_action=lambda_t2_action,
         smooth_l1_beta=smooth_l1_beta, # Pass beta
@@ -392,17 +394,15 @@ if __name__ == "__main__":
     
     batch_size = 2
     image_t1 = torch.randn(batch_size, IN_CHANNELS, 224, 224, device=device)
-    a_t1_gt = torch.randn(batch_size, 6, device=device)
     a_hat_t1_to_t2_gt = torch.randn(batch_size, 6, device=device)
-    a_t1_prime_gt = torch.randn(batch_size, 6, device=device) # Target for composed action
-    a_t2_prime_gt = torch.randn(batch_size, 6, device=device) # Target for a_prime_t2_hat
+    at1_6dof_gt = torch.randn(batch_size, 6, device=device) # Target: JSON at1_6dof (main task)
+    at2_6dof_gt = torch.randn(batch_size, 6, device=device) # Target: JSON at2_6dof (auxiliary task)
 
     print(f"\nInput shapes for forward pass:")
     print(f"  Image (image_t1): {image_t1.shape}")
-    print(f"  Action at t1 (a_t1_gt): {a_t1_gt.shape}")
     print(f"  Relative action t1->t2 (a_hat_t1_to_t2_gt): {a_hat_t1_to_t2_gt.shape}")
-    print(f"  Target composed action (a_t1_prime_gt): {a_t1_prime_gt.shape}")
-    print(f"  Target action at t2 (a_t2_prime_gt): {a_t2_prime_gt.shape}")
+    print(f"  Target at1_6dof (at1_6dof_gt): {at1_6dof_gt.shape}")
+    print(f"  Target at2_6dof (at2_6dof_gt): {at2_6dof_gt.shape}")
     
     system.eval()
     with torch.no_grad():
@@ -419,11 +419,11 @@ if __name__ == "__main__":
     original_channels_t1 = system._get_original_channels_t1(image_t1)
     total_loss, loss_dict = system.compute_losses(
         predicted_action_composed,
-        a_t1_prime_gt, 
+        at1_6dof_gt, 
         reconstructed_channels_t1,
         original_channels_t1,
         a_prime_t2_hat,
-        a_t2_prime_gt 
+        at2_6dof_gt 
     )
     
     print(f"\nLoss values:")
@@ -437,7 +437,7 @@ if __name__ == "__main__":
     system.train()
     optimizer = system.configure_optimizers()["optimizer"]
     optimizer.zero_grad()
-    batch_data_train = (image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt)
+    batch_data_train = (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)
     train_loss = system.training_step(batch_data_train, 0)
     train_loss.backward()
     optimizer.step()
@@ -445,13 +445,13 @@ if __name__ == "__main__":
 
     print("\nTesting validation_step...")
     system.eval()
-    batch_data_val = (image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt)
+    batch_data_val = (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)
     val_loss = system.validation_step(batch_data_val, 0)
     print(f"  Validation step ran, loss: {val_loss.item():.4f}")
 
     print("\nTesting test_step...")
     system.eval()
-    batch_data_test = (image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt)
+    batch_data_test = (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)
     test_outputs = system.test_step(batch_data_test, 0)
     print(f"  Test step ran, MSE (composed action): {test_outputs['test_mse_composed_action'].item():.4f}")
 
@@ -463,4 +463,9 @@ if __name__ == "__main__":
 
     print("\nBasic tests passed for CardiacDreamerSystem with SmoothL1Loss and new batch structure.")
     print("Ensure your DataLoader provides batches with the new structure:")
-    print("  (image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt)") 
+    print("  (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)")
+    print("Where:")
+    print("  - image_t1: from JSON ft1_image_path")
+    print("  - a_hat_t1_to_t2_gt: from JSON action_change_6dof")
+    print("  - at1_6dof_gt: from JSON at1_6dof (main task target)")
+    print("  - at2_6dof_gt: from JSON at2_6dof (auxiliary task target)") 

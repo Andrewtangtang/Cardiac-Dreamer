@@ -1,0 +1,74 @@
+# Production Configuration for Cardiac Dreamer Training
+# This file contains all configurable parameters for training
+
+model:
+  # Model architecture parameters
+  token_type: "channel"           # Token strategy (channel/spatial)
+  d_model: 768                    # Transformer model dimension
+  num_heads: 12                   # Number of attention heads
+  num_layers: 6                   # Number of transformer layers
+  feature_dim: 49                 # Spatial feature dimension (7x7=49)
+  in_channels: 1                  # Input image channels (grayscale)
+  use_pretrained: true            # Use ImageNet pretrained ResNet34
+  
+  # Optimization parameters
+  lr: 1.0e-3                    # Learning rate
+  weight_decay: 1.0e-5            # Weight decay for regularization
+  
+  # Loss function parameters
+  lambda_latent: 0.2              # Weight for latent reconstruction loss
+  lambda_t2_action: 1.0           # Weight for auxiliary t2 action loss
+  smooth_l1_beta: 1.0             # Beta parameter for SmoothL1Loss
+  primary_task_only: false        # If true, only use main task loss
+  
+  # Advanced settings
+  use_flash_attn: false           # Use flash attention (experimental)
+
+training:
+  # Data loading parameters
+  batch_size: 16                  # Batch size for training
+  num_workers: 4                  # Number of data loading workers
+  
+  # Training schedule
+  max_epochs: 150                 # Maximum number of training epochs
+  early_stop_patience: 20         # Early stopping patience (epochs)
+  check_val_every_n_epoch: 1      # Validation frequency
+  
+  # Optimization settings
+  gradient_clip_val: 1.0          # Gradient clipping value
+  accumulate_grad_batches: 1      # Gradient accumulation steps
+  log_every_n_steps: 20           # Logging frequency
+  
+  # Hardware settings
+  accelerator: "auto"             # Hardware accelerator (auto/gpu/cpu)
+  precision: 16                   # Training precision (16/32)
+  
+# Data configuration
+data:
+  # Automatic patient splitting ratios
+  train_ratio: 0.7                # 70% for training
+  val_ratio: 0.15                 # 15% for validation
+  test_ratio: 0.15                # 15% for testing
+  
+  # Data augmentation (future expansion)
+  augmentation:
+    enabled: false
+    rotation_range: 10
+    brightness_range: 0.1
+    contrast_range: 0.1
+
+# Experiment tracking
+experiment:
+  # Weights & Biases (optional)
+  use_wandb: false
+  wandb_project: "cardiac_dreamer"
+  wandb_entity: "your_username"
+  
+  # Tags for experiment organization
+  tags:
+    - "production"
+    - "cross_patient"
+    - "channel_tokens"
+    
+  # Notes
+  description: "Production training run with cross-patient validation" 
