@@ -1,0 +1,18 @@
+{
+  "total_samples": {
+    "train": 121,
+    "val": 86,
+    "test": 193
+  },
+  "patient_distribution": {
+    "train": {
+      "data_0513_02": 121
+    },
+    "val": {
+      "data_0513_03": 86
+    },
+    "test": {
+      "data_0513_01": 193
+    }
+  }
+}

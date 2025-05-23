@@ -12,8 +12,8 @@ model:
   use_pretrained: true            # Use ImageNet pretrained ResNet34
   
   # Optimization parameters
-  lr: 1.0e-3                    # Learning rate
-  weight_decay: 1.0e-5            # Weight decay for regularization
+  lr: 1.0e-4                    # Learning rate
+  weight_decay: 1.0e-4          # Weight decay for regularization
   
   # Loss function parameters
   lambda_latent: 0.2              # Weight for latent reconstruction loss
@@ -26,7 +26,7 @@ model:
 
 training:
   # Data loading parameters
-  batch_size: 16                  # Batch size for training
+  batch_size: 8                 # Batch size for training
   num_workers: 4                  # Number of data loading workers
   
   # Training schedule
@@ -41,7 +41,7 @@ training:
   
   # Hardware settings
   accelerator: "auto"             # Hardware accelerator (auto/gpu/cpu)
-  precision: 16                   # Training precision (16/32)
+  precision: 32                  # Training precision 32
   
 # Data configuration
 data:
@@ -60,15 +60,16 @@ data:
 # Experiment tracking
 experiment:
   # Weights & Biases (optional)
-  use_wandb: false
-  wandb_project: "cardiac_dreamer"
-  wandb_entity: "your_username"
+  use_wandb: true                     # start WandB
+  wandb_project: "cardiac_dreamer"    # project name
+  wandb_entity: "yuntang-national-cheng-kung-university-co-op"  # wandb username
   
   # Tags for experiment organization
   tags:
     - "production"
     - "cross_patient"
     - "channel_tokens"
+    - "thesis_experiment"
     
   # Notes
-  description: "Production training run with cross-patient validation" 
+  description: "Production training run with cross-patient validation and WandB tracking" 

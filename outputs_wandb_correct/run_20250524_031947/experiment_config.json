@@ -1,0 +1,39 @@
+{
+  "experiment_info": {
+    "timestamp": "2025-05-24T03:19:47.696322",
+    "data_dir": "data/processed",
+    "output_dir": "outputs_wandb_correct",
+    "manual_splits": false,
+    "train_patients": null,
+    "val_patients": null,
+    "test_patients": null
+  },
+  "model_config": {
+    "token_type": "channel",
+    "d_model": 768,
+    "num_heads": 12,
+    "num_layers": 6,
+    "feature_dim": 49,
+    "in_channels": 1,
+    "use_pretrained": true,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "lambda_latent": 0.2,
+    "lambda_t2_action": 1.0,
+    "smooth_l1_beta": 1.0,
+    "use_flash_attn": false,
+    "primary_task_only": false
+  },
+  "training_config": {
+    "batch_size": 8,
+    "num_workers": 4,
+    "max_epochs": 150,
+    "early_stop_patience": 20,
+    "accelerator": "auto",
+    "precision": 32,
+    "gradient_clip_val": 1.0,
+    "accumulate_grad_batches": 1,
+    "check_val_every_n_epoch": 1,
+    "log_every_n_steps": 20
+  }
+}

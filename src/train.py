@@ -636,10 +636,10 @@ def load_config(config_path: str) -> Dict:
         Configuration dictionary
     """
     if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
         print(f"Loaded configuration from {config_path}")
-        return config
+    return config
     else:
         print(f"Configuration file {config_path} not found, using defaults")
         return {}
@@ -932,7 +932,7 @@ def setup_callbacks(output_dir: str, train_config: Dict) -> List:
     return callbacks
 
 
-def setup_loggers(output_dir: str) -> List:
+def setup_loggers(output_dir: str, config_override: Dict = None) -> List:
     """Set up training loggers"""
     loggers = []
     
@@ -950,6 +950,36 @@ def setup_loggers(output_dir: str) -> List:
         name="cardiac_dreamer_csv"
     )
     loggers.append(csv_logger)
+    
+    # WandB logger (if enabled)
+    if config_override and config_override.get("experiment", {}).get("use_wandb", False):
+        try:
+            from pytorch_lightning.loggers import WandbLogger
+            
+            experiment_config = config_override.get("experiment", {})
+            
+            # 簡化配置，避免權限問題
+            wandb_config = {
+                "project": experiment_config.get("wandb_project", "cardiac_dreamer"),
+                "tags": experiment_config.get("tags", []),
+                "notes": experiment_config.get("description", ""),
+                "name": f"cardiac_dreamer_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            }
+            
+            # 添加 entity（如果有指定）
+            entity = experiment_config.get("wandb_entity")
+            if entity:
+                wandb_config["entity"] = entity
+                
+            wandb_logger = WandbLogger(**wandb_config)
+            loggers.append(wandb_logger)
+            print(f"✅ WandB logger enabled - Project: {experiment_config.get('wandb_project')}")
+            
+        except ImportError:
+            print("⚠️ WandB not available, skipping WandB logger")
+        except Exception as e:
+            print(f"⚠️ Failed to setup WandB logger: {e}")
+            print("   Continuing without WandB...")
     
     return loggers
 
@@ -1122,7 +1152,27 @@ def main(args):
     
     # Set up callbacks and loggers
     callbacks = setup_callbacks(run_output_dir, train_config)
-    loggers = setup_loggers(run_output_dir)
+    loggers = setup_loggers(run_output_dir, config_override)
+    
+    # Log experiment config to WandB if enabled
+    if config_override and config_override.get("experiment", {}).get("use_wandb", False):
+        for logger in loggers:
+            if hasattr(logger, 'experiment') and hasattr(logger.experiment, 'config'):
+                # Log all configurations to WandB
+                logger.experiment.config.update({
+                    "model_config": model_config,
+                    "training_config": train_config,
+                    "dataset_stats": {
+                        "train_samples": len(train_dataset),
+                        "val_samples": len(val_dataset), 
+                        "test_samples": len(test_dataset),
+                        "train_patients": list(train_dataset.get_patient_stats().keys()),
+                        "val_patients": list(val_dataset.get_patient_stats().keys()),
+                        "test_patients": list(test_dataset.get_patient_stats().keys())
+                    }
+                })
+                print("📊 Experiment config logged to WandB")
+                break
     
     # Set up trainer
     trainer = pl.Trainer(
@@ -1147,14 +1197,14 @@ def main(args):
     print(f"Checkpoints will be saved to: {os.path.join(run_output_dir, 'checkpoints')}")
     
     try:
-        trainer.fit(model, train_loader, val_loader)
+    trainer.fit(model, train_loader, val_loader)
         
         # Create training summary
         visualizer.create_training_summary(trainer, model)
     
-        # Test model
-        print("Testing model...")
-        trainer.test(model, test_loader)
+    # Test model
+    print("Testing model...")
+    trainer.test(model, test_loader)
     
         # Save final model state
         final_model_path = os.path.join(run_output_dir, "final_model.ckpt")
