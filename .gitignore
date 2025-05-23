@@ -70,3 +70,6 @@ tensorboard/
 **/temp_images/
 /models/
 /checkpoints/ 
+
+## data
+data/processed/

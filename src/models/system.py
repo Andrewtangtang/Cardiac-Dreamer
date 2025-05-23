@@ -41,8 +41,10 @@ class CardiacDreamerSystem(pl.LightningModule):
         lr: Learning rate (default: 1e-4)
         weight_decay: Weight decay for optimizer (default: 1e-5)
         lambda_latent: Weight for latent loss (default: 0.2)
+        lambda_t2_action: Weight for auxiliary t2 action loss (default: 1.0)
         smooth_l1_beta: Beta parameter for SmoothL1Loss (default: 1.0)
         use_flash_attn: Whether to use flash attention (default: True)
+        primary_task_only: If True, only use main task loss (at1 prediction) (default: False)
     """
     def __init__(
         self,
@@ -56,14 +58,17 @@ class CardiacDreamerSystem(pl.LightningModule):
         lr: float = 1e-4,
         weight_decay: float = 1e-5,
         lambda_latent: float = 0.2,
+        lambda_t2_action: float = 1.0,  # Weight for auxiliary t2 action loss
         smooth_l1_beta: float = 1.0, # Added beta for SmoothL1Loss
-        use_flash_attn: bool = True
+        use_flash_attn: bool = True,
+        primary_task_only: bool = False  # If True, only use main task loss (at1 prediction)
     ):
         super().__init__()
         self.save_hyperparameters()
         
         self.token_type = token_type
         self.lambda_latent = lambda_latent
+        self.lambda_t2_action = lambda_t2_action
         self.lr = lr
         self.weight_decay = weight_decay
         
@@ -91,7 +96,6 @@ class CardiacDreamerSystem(pl.LightningModule):
     def forward(
         self, 
         image_t1: torch.Tensor, 
-        a_t1_gt: torch.Tensor,
         a_hat_t1_to_t2_gt: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
@@ -99,8 +103,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         
         Args:
             image_t1: Input ultrasound image at time t1 [batch_size, channels, height, width]
-            a_t1_gt: Ground truth action at time t1 [batch_size, 6]. Used by Dreamer to predict f_hat_t2.
-            a_hat_t1_to_t2_gt: Ground truth relative action from t1 to t2 [batch_size, 6]. Provided by dataset.
+            a_hat_t1_to_t2_gt: Ground truth relative action from t1 to t2 [batch_size, 6]. Provided by dataset. used to input in dreamer to predict f_hat_t2.
             
         Returns:
             Dictionary containing:
@@ -115,7 +118,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         channel_tokens_t1 = feature_map_t1.reshape(batch_size, 512, -1)
         
         reconstructed_tokens_t1, _, predicted_next_feature_tokens_f_hat_t2 = self.dreamer(
-            channel_tokens_t1, a_t1_gt
+            channel_tokens_t1, a_hat_t1_to_t2_gt
         )
         
         pooled_f_hat_t2 = pool_features(predicted_next_feature_tokens_f_hat_t2)
@@ -158,36 +161,46 @@ class CardiacDreamerSystem(pl.LightningModule):
     
     def compute_losses(
         self, 
-        predicted_action_composed: torch.Tensor,  # a_t1_prime_composed
-        target_action_composed_gt: torch.Tensor,    # a_t1_prime_gt (target for composed)
+        predicted_action_composed: torch.Tensor,  # a_t1_prime_composed (主要任務輸出)
+        target_action_composed_gt: torch.Tensor,    # a_t1_prime_gt (主要任務目標)
         reconstructed_channels_t1: torch.Tensor,
         original_channels_t1: torch.Tensor,
-        a_prime_t2_hat: torch.Tensor,             # Predicted action at t2 (from guidance)
-        target_a_t2_prime_gt: torch.Tensor        # a_t2_prime_gt (target for guidance output)
+        a_prime_t2_hat: torch.Tensor,             # Predicted action at t2 (輔助任務輸出)
+        target_a_t2_prime_gt: torch.Tensor        # a_t2_prime_gt (輔助任務目標)
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        Computes losses using SmoothL1Loss for actions and MSE for latent reconstruction.
+        Computes losses with configurable weights for main and auxiliary tasks.
+        
+        Main task: Predict final composed action at1 (corresponds to figure's at1 vs ât1)
+        Auxiliary tasks: t2 action prediction and latent reconstruction (for training stability)
         """
-        # L_SmoothL1(a_t1_prime, a_t1_hat_gt)
-        loss_action_t1_prime = self.smooth_l1_loss(predicted_action_composed, target_action_composed_gt)
+        # 主要任務損失 - L_SmoothL1(at1, ât1) 對應圖片中的公式
+        main_task_loss = self.smooth_l1_loss(predicted_action_composed, target_action_composed_gt)
         
-        # L_SmoothL1(a_t2_prime_hat, a_t2_hat_gt)
-        loss_action_t2_prime = self.smooth_l1_loss(a_prime_t2_hat, target_a_t2_prime_gt)
+        # 輔助任務損失 - 幫助訓練過程
+        aux_t2_action_loss = self.smooth_l1_loss(a_prime_t2_hat, target_a_t2_prime_gt)
+        aux_latent_loss = F.mse_loss(reconstructed_channels_t1, original_channels_t1)
         
-        combined_action_loss = loss_action_t1_prime + loss_action_t2_prime
-        
-        # Latent reconstruction loss for t1 features (MSE)
-        latent_loss = F.mse_loss(reconstructed_channels_t1, original_channels_t1)
-        
-        # Total loss
-        total_loss = combined_action_loss + self.lambda_latent * latent_loss
+        # 根據配置組合損失
+        if self.hparams.primary_task_only:
+            # 只使用主要任務損失 - 對應圖片中的評估方式
+            total_loss = main_task_loss
+            combined_action_loss = main_task_loss
+        else:
+            # 完整訓練損失 - 包含輔助任務幫助訓練
+            combined_action_loss = main_task_loss + self.lambda_t2_action * aux_t2_action_loss
+            total_loss = combined_action_loss + self.lambda_latent * aux_latent_loss
         
         loss_dict = {
             "total_loss": total_loss,
+            "main_task_loss": main_task_loss,  # 這是您關心的主要指標
             "combined_action_loss": combined_action_loss,
-            "action_loss_t1_prime": loss_action_t1_prime,
-            "action_loss_t2_prime": loss_action_t2_prime,
-            "latent_loss": latent_loss
+            "aux_t2_action_loss": aux_t2_action_loss,
+            "aux_latent_loss": aux_latent_loss,
+            # 保持向後兼容性
+            "action_loss_t1_prime": main_task_loss,
+            "action_loss_t2_prime": aux_t2_action_loss,
+            "latent_loss": aux_latent_loss
         }
         return total_loss, loss_dict
     
@@ -201,7 +214,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         # Batch structure: (image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt)
         image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt = batch
         
-        system_outputs = self(image_t1, a_t1_gt, a_hat_t1_to_t2_gt)
+        system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
         predicted_composed_action = system_outputs["predicted_action_composed"]
         reconstructed_channels_t1 = system_outputs["reconstructed_channels_t1"]
@@ -219,6 +232,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         )
         
         self.log("train_total_loss", total_loss, prog_bar=True, on_step=True, on_epoch=True)
+        self.log("train_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=True, on_epoch=True)  # 主要關注指標
         self.log("train_combined_action_loss", loss_dict["combined_action_loss"], on_step=True, on_epoch=True)
         self.log("train_action_loss_t1p", loss_dict["action_loss_t1_prime"], on_step=False, on_epoch=True)
         self.log("train_action_loss_t2p", loss_dict["action_loss_t2_prime"], on_step=False, on_epoch=True)
@@ -228,7 +242,7 @@ class CardiacDreamerSystem(pl.LightningModule):
     
     def validation_step(self, batch: Tuple[torch.Tensor, ...], batch_idx: int) -> torch.Tensor:
         image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt = batch
-        system_outputs = self(image_t1, a_t1_gt, a_hat_t1_to_t2_gt)
+        system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
         predicted_composed_action = system_outputs["predicted_action_composed"]
         reconstructed_channels_t1 = system_outputs["reconstructed_channels_t1"]
@@ -246,6 +260,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         )
         
         self.log("val_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)  # 主要關注指標
         self.log("val_combined_action_loss", loss_dict["combined_action_loss"], on_step=False, on_epoch=True)
         self.log("val_action_loss_t1p", loss_dict["action_loss_t1_prime"], on_step=False, on_epoch=True)
         self.log("val_action_loss_t2p", loss_dict["action_loss_t2_prime"], on_step=False, on_epoch=True)
@@ -255,7 +270,7 @@ class CardiacDreamerSystem(pl.LightningModule):
     
     def test_step(self, batch: Tuple[torch.Tensor, ...], batch_idx: int) -> Dict[str, torch.Tensor]:
         image_t1, a_t1_gt, a_hat_t1_to_t2_gt, a_t1_prime_gt, a_t2_prime_gt = batch
-        system_outputs = self(image_t1, a_t1_gt, a_hat_t1_to_t2_gt)
+        system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
         predicted_composed_action = system_outputs["predicted_action_composed"]
         reconstructed_channels_t1 = system_outputs["reconstructed_channels_t1"]
@@ -317,10 +332,12 @@ def get_cardiac_dreamer_system(
     feature_dim: int = 49, 
     lr: float = 1e-4,
     lambda_latent: float = 0.2,
+    lambda_t2_action: float = 1.0,
     smooth_l1_beta: float = 1.0, # Added beta here
     use_flash_attn: bool = True,
     in_channels: int = 1, 
-    use_pretrained: bool = True 
+    use_pretrained: bool = True,
+    primary_task_only: bool = False  # Added missing parameter
 ) -> CardiacDreamerSystem:
     return CardiacDreamerSystem(
         token_type=token_type,
@@ -330,10 +347,12 @@ def get_cardiac_dreamer_system(
         feature_dim=feature_dim,
         lr=lr,
         lambda_latent=lambda_latent,
+        lambda_t2_action=lambda_t2_action,
         smooth_l1_beta=smooth_l1_beta, # Pass beta
         use_flash_attn=use_flash_attn,
         in_channels=in_channels, 
-        use_pretrained=use_pretrained 
+        use_pretrained=use_pretrained,
+        primary_task_only=primary_task_only  # Pass the parameter
     )
 
 
@@ -348,6 +367,7 @@ if __name__ == "__main__":
     FEATURE_DIM = 49
     LR = 1e-4
     LAMBDA_LATENT = 0.2
+    LAMBDA_T2_ACTION = 1.0
     SMOOTH_L1_BETA = 1.0
     USE_FLASH_ATTN = False
     IN_CHANNELS = 1
@@ -361,6 +381,7 @@ if __name__ == "__main__":
         feature_dim=FEATURE_DIM,
         lr=LR,
         lambda_latent=LAMBDA_LATENT,
+        lambda_t2_action=LAMBDA_T2_ACTION,
         smooth_l1_beta=SMOOTH_L1_BETA,
         use_flash_attn=USE_FLASH_ATTN,
         in_channels=IN_CHANNELS,
@@ -385,7 +406,7 @@ if __name__ == "__main__":
     
     system.eval()
     with torch.no_grad():
-        system_outputs = system(image_t1, a_t1_gt, a_hat_t1_to_t2_gt)
+        system_outputs = system(image_t1, a_hat_t1_to_t2_gt)
         predicted_action_composed = system_outputs["predicted_action_composed"]
         reconstructed_channels_t1 = system_outputs["reconstructed_channels_t1"]
         a_prime_t2_hat = system_outputs["a_prime_t2_hat"]
