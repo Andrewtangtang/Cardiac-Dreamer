@@ -147,18 +147,15 @@ class CardiacDreamerSystem(pl.LightningModule):
             lr=self.lr,
             weight_decay=self.weight_decay
         )
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            mode='min',
-            factor=0.5,
-            patience=5,
-            min_lr=1e-6
+            T_max=50,
+            eta_min=1e-6
         )
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "val_loss",
                 "interval": "epoch",
                 "frequency": 1
             }
