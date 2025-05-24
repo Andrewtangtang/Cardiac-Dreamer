@@ -636,10 +636,10 @@ def load_config(config_path: str) -> Dict:
         Configuration dictionary
     """
     if os.path.exists(config_path):
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-        print(f"Loaded configuration from {config_path}")
-    return config
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+            print(f"Loaded configuration from {config_path}")
+        return config
     else:
         print(f"Configuration file {config_path} not found, using defaults")
         return {}
@@ -1197,16 +1197,16 @@ def main(args):
     print(f"Checkpoints will be saved to: {os.path.join(run_output_dir, 'checkpoints')}")
     
     try:
-    trainer.fit(model, train_loader, val_loader)
-        
+        trainer.fit(model, train_loader, val_loader)
+            
         # Create training summary
         visualizer.create_training_summary(trainer, model)
     
-    # Test model
-    print("Testing model...")
-    trainer.test(model, test_loader)
+        # Test model
+        print("Testing model...")
+        trainer.test(model, test_loader)
     
-        # Save final model state
+            # Save final model state
         final_model_path = os.path.join(run_output_dir, "final_model.ckpt")
         trainer.save_checkpoint(final_model_path)
         

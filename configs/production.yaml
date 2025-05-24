@@ -16,8 +16,8 @@ model:
   weight_decay: 1.0e-4          # Weight decay for regularization
   
   # Loss function parameters
-  lambda_latent: 0.2              # Weight for latent reconstruction loss
-  lambda_t2_action: 1.0           # Weight for auxiliary t2 action loss
+  lambda_latent: 0.1              # Weight for latent reconstruction loss
+  lambda_t2_action: 0.5          # Weight for auxiliary t2 action loss
   smooth_l1_beta: 1.0             # Beta parameter for SmoothL1Loss
   primary_task_only: false        # If true, only use main task loss
   
@@ -30,8 +30,8 @@ training:
   num_workers: 4                  # Number of data loading workers
   
   # Training schedule
-  max_epochs: 150                 # Maximum number of training epochs
-  early_stop_patience: 20         # Early stopping patience (epochs)
+  max_epochs: 300                 # Maximum number of training epochs
+  early_stop_patience: 50         # Early stopping patience (epochs)
   check_val_every_n_epoch: 1      # Validation frequency
   
   # Optimization settings

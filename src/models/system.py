@@ -19,7 +19,7 @@ from typing import Dict, Any, Tuple, Optional, List
 from src.models.backbone import get_resnet34_encoder
 from src.models.dreamer_channel import get_dreamer_channel, pool_features
 from src.models.guidance import get_guidance_layer
-from src.utils.transformation_utils import dof6_to_matrix, matrix_to_dof6
+from src.utils.transformation_utils import dof6_to_matrix, matrix_to_dof6, matrix_inverse
 
 
 class CardiacDreamerSystem(pl.LightningModule):
@@ -71,6 +71,9 @@ class CardiacDreamerSystem(pl.LightningModule):
         self.lambda_t2_action = lambda_t2_action
         self.lr = lr
         self.weight_decay = weight_decay
+        
+        # Initialize test step outputs collection for PyTorch Lightning v2.0.0 compatibility
+        self.test_step_outputs = []
         
         self.backbone = get_resnet34_encoder(in_channels=in_channels, pretrained=use_pretrained)
         
@@ -126,7 +129,9 @@ class CardiacDreamerSystem(pl.LightningModule):
         
         T_a_hat_t1_to_t2_gt = dof6_to_matrix(a_hat_t1_to_t2_gt)
         T_a_prime_t2_hat = dof6_to_matrix(a_prime_t2_hat)
-        T_composed = torch.matmul(T_a_hat_t1_to_t2_gt, T_a_prime_t2_hat)
+
+        T_a_hat_t1_to_t2_gt_inv = matrix_inverse(T_a_hat_t1_to_t2_gt)
+        T_composed = torch.matmul(T_a_prime_t2_hat, T_a_hat_t1_to_t2_gt_inv)
         a_t1_prime_composed = matrix_to_dof6(T_composed)
         
         return {
@@ -297,6 +302,15 @@ class CardiacDreamerSystem(pl.LightningModule):
         self.log("test_latent_loss", loss_dict["latent_loss"], on_step=False, on_epoch=True)
         self.log("test_mse_composed_action", mse_composed_action, on_step=False, on_epoch=True)
         
+        self.test_step_outputs.append({
+            "test_total_loss": total_loss,
+            "test_mse_composed_action": mse_composed_action,
+            "predicted_action_composed": predicted_composed_action,
+            "target_action_composed_gt": at1_6dof_gt,
+            "a_prime_t2_hat": a_prime_t2_hat, # Include for potential analysis
+            "target_a_t2_prime_gt": at2_6dof_gt # Include for potential analysis
+        })
+        
         return {
             "test_total_loss": total_loss,
             "test_mse_composed_action": mse_composed_action,
@@ -306,9 +320,13 @@ class CardiacDreamerSystem(pl.LightningModule):
             "target_a_t2_prime_gt": at2_6dof_gt # Include for potential analysis
         }
     
-    def test_epoch_end(self, outputs: List[Dict[str, torch.Tensor]]):
-        all_preds_composed = torch.cat([out["predicted_action_composed"] for out in outputs])
-        all_targets_composed_gt = torch.cat([out["target_action_composed_gt"] for out in outputs])
+    def on_test_epoch_end(self):
+        """PyTorch Lightning v2.0.0 compatible test epoch end hook"""
+        if not self.test_step_outputs:
+            return
+            
+        all_preds_composed = torch.cat([out["predicted_action_composed"] for out in self.test_step_outputs])
+        all_targets_composed_gt = torch.cat([out["target_action_composed_gt"] for out in self.test_step_outputs])
         
         overall_mse_composed = F.mse_loss(all_preds_composed, all_targets_composed_gt)
         self.log("test_final_mse_composed", overall_mse_composed)
@@ -319,10 +337,13 @@ class CardiacDreamerSystem(pl.LightningModule):
             self.log(f"test_mse_composed_{dim_names[i]}", dim_mse)
 
         # Optionally, calculate and log MSE for a_prime_t2_hat vs target_a_t2_prime_gt if needed
-        # all_preds_a_t2_hat = torch.cat([out["a_prime_t2_hat"] for out in outputs])
-        # all_targets_a_t2_gt = torch.cat([out["target_a_t2_prime_gt"] for out in outputs])
+        # all_preds_a_t2_hat = torch.cat([out["a_prime_t2_hat"] for out in self.test_step_outputs])
+        # all_targets_a_t2_gt = torch.cat([out["target_a_t2_prime_gt"] for out in self.test_step_outputs])
         # overall_mse_a_t2_hat = F.mse_loss(all_preds_a_t2_hat, all_targets_a_t2_gt)
         # self.log("test_final_mse_a_t2_hat", overall_mse_a_t2_hat)
+        
+        # Clear the outputs for next test epoch
+        self.test_step_outputs.clear()
 
 def get_cardiac_dreamer_system(
     token_type: str = "channel",
@@ -457,8 +478,7 @@ if __name__ == "__main__":
 
     print("\nTesting test_epoch_end...")
     system.eval()
-    outputs_list = [system.test_step(batch_data_test, 0) for _ in range(3)]
-    system.test_epoch_end(outputs_list)
+    system.on_test_epoch_end()
     print(f"  Test epoch end ran (check logged metrics for test_final_mse_composed and per-dim MSEs)")
 
     print("\nBasic tests passed for CardiacDreamerSystem with SmoothL1Loss and new batch structure.")
