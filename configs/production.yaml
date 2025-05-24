@@ -11,37 +11,40 @@ model:
   in_channels: 1                  # Input image channels (grayscale)
   use_pretrained: true            # Use ImageNet pretrained ResNet34
   
-  # Optimization parameters
-  lr: 5.0e-5                    # Learning rate
-  weight_decay: 1.0e-5          # Weight decay for regularization
+  # Optimization parameters - WITH DATA NORMALIZATION
+  lr: 3.0e-5                      # Moderate learning rate with normalized data
+  weight_decay: 1.0e-4            # Balanced weight decay
   
-  # Loss function parameters
-  lambda_latent: 0.1              # Weight for latent reconstruction loss
-  lambda_t2_action: 0.5          # Weight for auxiliary t2 action loss
-  smooth_l1_beta: 1.0             # Beta parameter for SmoothL1Loss
-  primary_task_only: false        # If true, only use main task loss
+  # Loss function parameters - NORMALIZED DATA VERSION
+  lambda_latent: 0.0              # Set to 0 - latent loss not used in total loss (monitoring only)
+  lambda_t2_action: 1.0           # Set to 1.0 - paper uses equal weighting for at1 and at2
+  smooth_l1_beta: 1.0             # Standard beta with normalized data
+  primary_task_only: false        # Keep false to use both at1 and at2 losses
+  
+  # Accuracy monitoring parameters
+  accuracy_tolerance: 0.5         # Tolerance ratio for accuracy computation (50% relative error tolerance)
   
   # Advanced settings
   use_flash_attn: false           # Use flash attention (experimental)
 
 training:
   # Data loading parameters
-  batch_size:  16               # Batch size for training
-  num_workers: 4                  # Number of data loading workers
+  batch_size: 8                   # Reasonable batch size
+  num_workers: 2                  # Adjust based on CPU cores
   
   # Training schedule
-  max_epochs: 200                 # Maximum number of training epochs
-  early_stop_patience: 30         # Early stopping patience (epochs)
+  max_epochs: 150                 # Sufficient epochs for convergence
+  early_stop_patience: 30         # Reasonable patience
   check_val_every_n_epoch: 1      # Validation frequency
   
-  # Optimization settings
-  gradient_clip_val: 0.5          # Gradient clipping value
-  accumulate_grad_batches: 2      # Gradient accumulation steps
+  # Optimization settings - NORMALIZED DATA
+  gradient_clip_val: 1.0          # Standard gradient clipping
+  accumulate_grad_batches: 4      # Maintain effective batch size
   log_every_n_steps: 10           # Logging frequency
   
   # Hardware settings
   accelerator: "auto"             # Hardware accelerator (auto/gpu/cpu)
-  precision: 32                  # Training precision 32
+  precision: 32                   # Training precision 32
   
 # Data configuration
 data:
@@ -50,12 +53,12 @@ data:
   val_ratio: 0.15                 # 15% for validation
   test_ratio: 0.15                # 15% for testing
   
-  # Data augmentation (future expansion)
+  # Data augmentation
   augmentation:
-    enabled: false
-    rotation_range: 5
-    brightness_range: 0.05
-    contrast_range: 0.05
+    enabled: true                 # Enable with normalized data
+    rotation_range: 5             # Small rotation augmentation
+    brightness_range: 0.05        # Small brightness augmentation
+    contrast_range: 0.05          # Small contrast augmentation
 
 # Experiment tracking
 experiment:
@@ -66,10 +69,10 @@ experiment:
   
   # Tags for experiment organization
   tags:
-    - "production"
+    - "data_normalized"           # Data normalization implemented
+    - "paper_formulation"
     - "cross_patient"
-    - "channel_tokens"
-    - "thesis_experiment"
+    - "stable_training"
     
   # Notes
-  description: "Production training run with cross-patient validation and WandB tracking" 
+  description: "Cardiac Dreamer with data normalization and paper's loss formulation" 

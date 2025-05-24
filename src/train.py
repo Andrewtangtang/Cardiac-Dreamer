@@ -242,6 +242,7 @@ class CrossPatientTransitionsDataset(Dataset):
         val_patients: List of patient IDs for validation (e.g., ["data_0513_03"])
         test_patients: List of patient IDs for testing (e.g., ["data_0513_04"])
         small_subset: Whether to use only a small subset of data (for testing)
+        normalize_actions: Whether to normalize 6DOF actions (default: True)
     """
     def __init__(
         self, 
@@ -251,12 +252,14 @@ class CrossPatientTransitionsDataset(Dataset):
         train_patients: Optional[List[str]] = None,
         val_patients: Optional[List[str]] = None,
         test_patients: Optional[List[str]] = None,
-        small_subset: bool = False
+        small_subset: bool = False,
+        normalize_actions: bool = True
     ):
         self.data_dir = data_dir
         self.transform = transform
         self.split = split
         self.small_subset = small_subset
+        self.normalize_actions = normalize_actions
         
         # Automatically detect patient splits if not provided
         if train_patients is None or val_patients is None or test_patients is None:
@@ -292,6 +295,26 @@ class CrossPatientTransitionsDataset(Dataset):
         self.transitions = []
         self.load_transitions()
         
+        # Compute normalization statistics if enabled
+        if self.normalize_actions and split == "train":
+            self.compute_normalization_stats()
+        elif self.normalize_actions:
+            # For val/test, load the normalization stats from training data
+            norm_file = os.path.join(self.data_dir, "normalization_stats.json")
+            if os.path.exists(norm_file):
+                print(f"📊 Loading normalization stats from: {norm_file}")
+                with open(norm_file, 'r') as f:
+                    norm_stats = json.load(f)
+                
+                self.action_mean = np.array(norm_stats["action_mean"])
+                self.action_std = np.array(norm_stats["action_std"])
+                print(f"✅ Successfully loaded normalization stats for {split} split")
+            else:
+                print(f"❌ Normalization stats file not found: {norm_file}")
+                print(f"   Using default values (mean=0, std=1) - this may cause issues!")
+                self.action_mean = np.array([0.0] * 6)
+                self.action_std = np.array([1.0] * 6)
+        
         # For small subset testing, limit samples
         if small_subset:
             num_samples = min(10, len(self.transitions))
@@ -299,6 +322,59 @@ class CrossPatientTransitionsDataset(Dataset):
             print(f"Using small subset for testing: {num_samples} samples")
             
         print(f"Loaded {len(self.transitions)} {split} transitions from {len(self.patient_ids)} patients")
+        
+        if self.normalize_actions:
+            print(f"📊 Action normalization enabled:")
+            print(f"   Mean: {self.action_mean}")
+            print(f"   Std: {self.action_std}")
+    
+    def compute_normalization_stats(self):
+        """Compute normalization statistics for 6DOF actions"""
+        print("Computing normalization statistics for 6DOF actions...")
+        
+        at1_actions = []
+        at2_actions = []
+        action_changes = []
+        
+        for transition in self.transitions:
+            at1_actions.append(transition["at1_6dof"])
+            at2_actions.append(transition["at2_6dof"])
+            action_changes.append(transition["action_change_6dof"])
+        
+        # Convert to numpy arrays
+        at1_actions = np.array(at1_actions)
+        at2_actions = np.array(at2_actions)
+        action_changes = np.array(action_changes)
+        
+        # Compute statistics for all actions combined
+        all_actions = np.vstack([at1_actions, at2_actions])
+        self.action_mean = np.mean(all_actions, axis=0)
+        self.action_std = np.std(all_actions, axis=0)
+        
+        # Prevent division by zero
+        self.action_std = np.where(self.action_std < 1e-6, 1.0, self.action_std)
+        
+        print(f"Action statistics computed from {len(self.transitions)} transitions:")
+        print(f"  AT1/AT2 range: {all_actions.min():.3f} to {all_actions.max():.3f}")
+        print(f"  Mean: {self.action_mean}")
+        print(f"  Std: {self.action_std}")
+        
+        # Save normalization stats for use in val/test
+        norm_stats = {
+            "action_mean": self.action_mean.tolist(),
+            "action_std": self.action_std.tolist()
+        }
+        
+        norm_file = os.path.join(self.data_dir, "normalization_stats.json")
+        with open(norm_file, 'w') as f:
+            json.dump(norm_stats, f, indent=2)
+        print(f"📁 Normalization stats saved to: {norm_file}")
+    
+    def normalize_action(self, action):
+        """Normalize a 6DOF action using computed statistics"""
+        if not self.normalize_actions:
+            return action
+        return (action - self.action_mean) / self.action_std
     
     def load_transitions(self):
         """Load transitions from all patient folders"""
@@ -348,9 +424,9 @@ class CrossPatientTransitionsDataset(Dataset):
         
         Returns:
             image_t1: Input image at time t1 [C, H, W]
-            a_hat_t1_to_t2_gt: Ground truth relative action from t1 to t2 [6]
-            at1_6dof_gt: Ground truth action at t1 [6] (main task target)
-            at2_6dof_gt: Ground truth action at t2 [6] (auxiliary task target)
+            a_hat_t1_to_t2_gt: Ground truth relative action from t1 to t2 [6] (normalized)
+            at1_6dof_gt: Ground truth action at t1 [6] (main task target, normalized)
+            at2_6dof_gt: Ground truth action at t2 [6] (auxiliary task target, normalized)
         """
         # Get transition data
         transition = self.transitions[idx]
@@ -366,6 +442,12 @@ class CrossPatientTransitionsDataset(Dataset):
         at1_6dof = np.array(transition["at1_6dof"], dtype=np.float32)
         action_change_6dof = np.array(transition["action_change_6dof"], dtype=np.float32) 
         at2_6dof = np.array(transition["at2_6dof"], dtype=np.float32)
+        
+        # Normalize actions if enabled
+        if self.normalize_actions:
+            at1_6dof = self.normalize_action(at1_6dof)
+            at2_6dof = self.normalize_action(at2_6dof)
+            # Note: action_change might need different normalization, keeping original for now
         
         # Convert to tensors
         a_hat_t1_to_t2_gt = torch.tensor(action_change_6dof, dtype=torch.float32)
@@ -666,7 +748,8 @@ def get_model_config(config_override: Dict = None) -> Dict:
         "lambda_t2_action": 1.0,
         "smooth_l1_beta": 1.0,
         "use_flash_attn": False,
-        "primary_task_only": False
+        "primary_task_only": False,
+        "accuracy_tolerance": 0.5  # Added accuracy tolerance parameter
     }
 
     if config_override:
@@ -815,8 +898,8 @@ class TrainingVisualizer:
         # Print available columns for debugging
         print(f"Available columns in CSV: {list(df.columns)}")
         
-        # Create training plots
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        # Create training plots with accuracy metrics
+        fig, axes = plt.subplots(3, 3, figsize=(20, 16))
         
         # Training and validation loss - use epoch columns
         train_loss = df[df['train_total_loss_epoch'].notna()]
@@ -853,42 +936,231 @@ class TrainingVisualizer:
             axes[0, 2].set_title('Learning Rate Schedule')
             axes[0, 2].grid(True)
         
+        # Main task accuracy metrics
+        val_acc_combined = df[df['val_main_acc_combined_avg'].notna()]
+        val_acc_direction = df[df['val_main_acc_direction_avg'].notna()]
+        val_acc_tolerance = df[df['val_main_acc_tolerance_avg'].notna()]
+        
+        if not val_acc_combined.empty:
+            axes[1, 0].plot(val_acc_combined['epoch'], val_acc_combined['val_main_acc_combined_avg'], 
+                           label='Combined Accuracy', color='#96CEB4', linewidth=2)
+            if not val_acc_direction.empty:
+                axes[1, 0].plot(val_acc_direction['epoch'], val_acc_direction['val_main_acc_direction_avg'], 
+                               label='Direction Accuracy', color='#FECA57', linewidth=2)
+            if not val_acc_tolerance.empty:
+                axes[1, 0].plot(val_acc_tolerance['epoch'], val_acc_tolerance['val_main_acc_tolerance_avg'], 
+                               label='Tolerance Accuracy', color='#FF9FF3', linewidth=2)
+            axes[1, 0].set_xlabel('Epoch')
+            axes[1, 0].set_ylabel('Accuracy')
+            axes[1, 0].set_title('Main Task Accuracy Metrics')
+            axes[1, 0].legend()
+            axes[1, 0].grid(True)
+            axes[1, 0].set_ylim(0, 1)
+        
+        # Per-axis accuracy (combined)
+        axis_names = ['x', 'y', 'z', 'roll', 'pitch', 'yaw']
+        axis_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3']
+        
+        for i, (axis, color) in enumerate(zip(axis_names, axis_colors)):
+            col_name = f'val_main_acc_{axis}_combined'
+            if col_name in df.columns:
+                axis_data = df[df[col_name].notna()]
+                if not axis_data.empty:
+                    axes[1, 1].plot(axis_data['epoch'], axis_data[col_name], 
+                                   label=f'{axis.upper()}', color=color, linewidth=2)
+        
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('Combined Accuracy')
+        axes[1, 1].set_title('Per-Axis Combined Accuracy')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True)
+        axes[1, 1].set_ylim(0, 1)
+        
+        # Relative error
+        val_rel_error = df[df['val_main_relative_error_avg'].notna()]
+        if not val_rel_error.empty:
+            axes[1, 2].plot(val_rel_error['epoch'], val_rel_error['val_main_relative_error_avg'], 
+                           color='#FF6B6B', linewidth=2)
+            axes[1, 2].set_xlabel('Epoch')
+            axes[1, 2].set_ylabel('Relative Error')
+            axes[1, 2].set_title('Average Relative Error')
+            axes[1, 2].grid(True)
+        
         # Component losses - use epoch columns
         latent_loss = df[df['train_latent_loss_epoch'].notna()]
         if not latent_loss.empty:
-            axes[1, 0].plot(latent_loss['epoch'], latent_loss['train_latent_loss_epoch'], color='#96CEB4')
-            axes[1, 0].set_xlabel('Epoch')
-            axes[1, 0].set_ylabel('Latent Loss')
-            axes[1, 0].set_title('Reconstruction Loss')
-            axes[1, 0].grid(True)
+            axes[2, 0].plot(latent_loss['epoch'], latent_loss['train_latent_loss_epoch'], color='#96CEB4')
+            axes[2, 0].set_xlabel('Epoch')
+            axes[2, 0].set_ylabel('Latent Loss')
+            axes[2, 0].set_title('Reconstruction Loss')
+            axes[2, 0].grid(True)
         
         # Auxiliary task loss
         aux_loss = df[df['train_action_loss_t2p'].notna()]
         if not aux_loss.empty:
-            axes[1, 1].plot(aux_loss['epoch'], aux_loss['train_action_loss_t2p'], color='#FECA57')
-            axes[1, 1].set_xlabel('Epoch')
-            axes[1, 1].set_ylabel('Auxiliary Task Loss')
-            axes[1, 1].set_title('t2 Action Prediction Loss')
-            axes[1, 1].grid(True)
+            axes[2, 1].plot(aux_loss['epoch'], aux_loss['train_action_loss_t2p'], color='#FECA57')
+            axes[2, 1].set_xlabel('Epoch')
+            axes[2, 1].set_ylabel('Auxiliary Task Loss')
+            axes[2, 1].set_title('t2 Action Prediction Loss')
+            axes[2, 1].grid(True)
         
-        # Final comparison
+        # Final comparison with accuracy metrics
         if not val_loss.empty:
             final_metrics = val_loss.iloc[-1]
+            
+            # Get final accuracy metrics
+            final_acc_combined = val_acc_combined.iloc[-1]['val_main_acc_combined_avg'] if not val_acc_combined.empty else 'N/A'
+            final_acc_direction = val_acc_direction.iloc[-1]['val_main_acc_direction_avg'] if not val_acc_direction.empty else 'N/A'
+            final_rel_error = val_rel_error.iloc[-1]['val_main_relative_error_avg'] if not val_rel_error.empty else 'N/A'
+            
             metrics_text = f"""Final Metrics:
 Val Loss: {final_metrics.get('val_loss', 'N/A'):.4f}
-Main Task: {final_metrics.get('val_main_task_loss', 'N/A'):.4f}
+Main Task Loss: {final_metrics.get('val_main_task_loss', 'N/A'):.4f}
+Combined Accuracy: {final_acc_combined:.3f if final_acc_combined != 'N/A' else 'N/A'}
+Direction Accuracy: {final_acc_direction:.3f if final_acc_direction != 'N/A' else 'N/A'}
+Relative Error: {final_rel_error:.3f if final_rel_error != 'N/A' else 'N/A'}
 Epoch: {final_metrics.get('epoch', 'N/A')}"""
             
-            axes[1, 2].text(0.1, 0.5, metrics_text, fontsize=12, 
+            axes[2, 2].text(0.1, 0.5, metrics_text, fontsize=11, 
                            verticalalignment='center', fontfamily='monospace')
-            axes[1, 2].set_title('Final Training Metrics')
-            axes[1, 2].axis('off')
+            axes[2, 2].set_title('Final Training Metrics')
+            axes[2, 2].axis('off')
         
         plt.tight_layout()
         plt.savefig(os.path.join(self.plots_dir, 'training_summary.png'), dpi=300, bbox_inches='tight')
         plt.close()
         
+        # Create separate accuracy analysis plot
+        self.create_accuracy_analysis(df)
+        
         print(f"Training summary saved to {self.plots_dir}")
+    
+    def create_accuracy_analysis(self, df):
+        """Create detailed accuracy analysis plots"""
+        print("Creating accuracy analysis plots...")
+        
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        
+        # 1. All axes accuracy comparison
+        axis_names = ['x', 'y', 'z', 'roll', 'pitch', 'yaw']
+        axis_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3']
+        
+        # Direction accuracy per axis
+        for i, (axis, color) in enumerate(zip(axis_names, axis_colors)):
+            col_name = f'val_main_acc_{axis}_direction'
+            if col_name in df.columns:
+                axis_data = df[df[col_name].notna()]
+                if not axis_data.empty:
+                    axes[0, 0].plot(axis_data['epoch'], axis_data[col_name], 
+                                   label=f'{axis.upper()}', color=color, linewidth=2)
+        
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].set_ylabel('Direction Accuracy')
+        axes[0, 0].set_title('Direction Accuracy per Axis')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True)
+        axes[0, 0].set_ylim(0, 1)
+        
+        # Tolerance accuracy per axis
+        for i, (axis, color) in enumerate(zip(axis_names, axis_colors)):
+            col_name = f'val_main_acc_{axis}_tolerance'
+            if col_name in df.columns:
+                axis_data = df[df[col_name].notna()]
+                if not axis_data.empty:
+                    axes[0, 1].plot(axis_data['epoch'], axis_data[col_name], 
+                                   label=f'{axis.upper()}', color=color, linewidth=2)
+        
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].set_ylabel('Tolerance Accuracy')
+        axes[0, 1].set_title('Tolerance Accuracy per Axis')
+        axes[0, 1].legend()
+        axes[0, 1].grid(True)
+        axes[0, 1].set_ylim(0, 1)
+        
+        # Combined accuracy per axis
+        for i, (axis, color) in enumerate(zip(axis_names, axis_colors)):
+            col_name = f'val_main_acc_{axis}_combined'
+            if col_name in df.columns:
+                axis_data = df[df[col_name].notna()]
+                if not axis_data.empty:
+                    axes[0, 2].plot(axis_data['epoch'], axis_data[col_name], 
+                                   label=f'{axis.upper()}', color=color, linewidth=2)
+        
+        axes[0, 2].set_xlabel('Epoch')
+        axes[0, 2].set_ylabel('Combined Accuracy')
+        axes[0, 2].set_title('Combined Accuracy per Axis')
+        axes[0, 2].legend()
+        axes[0, 2].grid(True)
+        axes[0, 2].set_ylim(0, 1)
+        
+        # Overall accuracy metrics comparison
+        val_acc_all_combined = df[df['val_main_acc_combined_all_axes'].notna()]
+        val_acc_all_direction = df[df['val_main_acc_direction_all_axes'].notna()]
+        val_acc_all_tolerance = df[df['val_main_acc_tolerance_all_axes'].notna()]
+        
+        if not val_acc_all_combined.empty:
+            axes[1, 0].plot(val_acc_all_combined['epoch'], val_acc_all_combined['val_main_acc_combined_all_axes'], 
+                           label='All Axes Combined', color='#FF6B6B', linewidth=3)
+        if not val_acc_all_direction.empty:
+            axes[1, 0].plot(val_acc_all_direction['epoch'], val_acc_all_direction['val_main_acc_direction_all_axes'], 
+                           label='All Axes Direction', color='#4ECDC4', linewidth=3)
+        if not val_acc_all_tolerance.empty:
+            axes[1, 0].plot(val_acc_all_tolerance['epoch'], val_acc_all_tolerance['val_main_acc_tolerance_all_axes'], 
+                           label='All Axes Tolerance', color='#45B7D1', linewidth=3)
+        
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('Accuracy (All Axes)')
+        axes[1, 0].set_title('Strict All-Axes Accuracy')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True)
+        axes[1, 0].set_ylim(0, 1)
+        
+        # Auxiliary task accuracy
+        val_aux_combined = df[df['val_aux_acc_combined_avg'].notna()]
+        val_aux_direction = df[df['val_aux_acc_direction_avg'].notna()]
+        
+        if not val_aux_combined.empty:
+            axes[1, 1].plot(val_aux_combined['epoch'], val_aux_combined['val_aux_acc_combined_avg'], 
+                           label='Aux Combined', color='#96CEB4', linewidth=2)
+        if not val_aux_direction.empty:
+            axes[1, 1].plot(val_aux_direction['epoch'], val_aux_direction['val_aux_acc_direction_avg'], 
+                           label='Aux Direction', color='#FECA57', linewidth=2)
+        
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('Auxiliary Task Accuracy')
+        axes[1, 1].set_title('Auxiliary Task (t2) Accuracy')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True)
+        axes[1, 1].set_ylim(0, 1)
+        
+        # Error analysis
+        val_rel_error = df[df['val_main_relative_error_avg'].notna()]
+        val_rel_error_std = df[df['val_main_relative_error_std'].notna()]
+        
+        if not val_rel_error.empty:
+            axes[1, 2].plot(val_rel_error['epoch'], val_rel_error['val_main_relative_error_avg'], 
+                           label='Mean Relative Error', color='#FF6B6B', linewidth=2)
+            
+            if not val_rel_error_std.empty:
+                # Plot error bands
+                mean_error = val_rel_error['val_main_relative_error_avg']
+                std_error = val_rel_error_std['val_main_relative_error_std']
+                epochs = val_rel_error['epoch']
+                
+                axes[1, 2].fill_between(epochs, mean_error - std_error, mean_error + std_error, 
+                                       alpha=0.3, color='#FF6B6B', label='±1 Std Dev')
+        
+        axes[1, 2].set_xlabel('Epoch')
+        axes[1, 2].set_ylabel('Relative Error')
+        axes[1, 2].set_title('Relative Error Analysis')
+        axes[1, 2].legend()
+        axes[1, 2].grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.plots_dir, 'accuracy_analysis.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Accuracy analysis saved to {self.plots_dir}")
 
 
 def setup_callbacks(output_dir: str, train_config: Dict) -> List:
@@ -1053,7 +1325,8 @@ def main(args):
         train_patients=train_patients,
         val_patients=val_patients,
         test_patients=test_patients,
-        small_subset=False  # Use full dataset for production
+        small_subset=False,  # Use full dataset for production
+        normalize_actions=True
     )
     
     val_dataset = CrossPatientTransitionsDataset(
@@ -1063,7 +1336,8 @@ def main(args):
         train_patients=train_patients,
         val_patients=val_patients,
         test_patients=test_patients,
-        small_subset=False  # Use full dataset for production
+        small_subset=False,  # Use full dataset for production
+        normalize_actions=True
     )
     
     test_dataset = CrossPatientTransitionsDataset(
@@ -1073,7 +1347,8 @@ def main(args):
         train_patients=train_patients,
         val_patients=val_patients,
         test_patients=test_patients,
-        small_subset=False  # Use full dataset for production
+        small_subset=False,  # Use full dataset for production
+        normalize_actions=True
     )
     
     print(f"\nDataset Statistics:")
@@ -1142,7 +1417,8 @@ def main(args):
         lambda_t2_action=model_config["lambda_t2_action"],
         smooth_l1_beta=model_config["smooth_l1_beta"],
         use_flash_attn=model_config["use_flash_attn"],
-        primary_task_only=model_config["primary_task_only"]
+        primary_task_only=model_config["primary_task_only"],
+        accuracy_tolerance=model_config["accuracy_tolerance"]
     )
     
     # Print model info
