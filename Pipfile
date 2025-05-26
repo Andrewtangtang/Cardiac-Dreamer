@@ -17,6 +17,8 @@ pytorch-lightning = "*"
 tensorboard = "*"
 seaborn = "*"
 wandb = "*"
+psutil = "*"
+gputil = "*"
 
 [dev-packages]
 

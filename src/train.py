@@ -1008,60 +1008,51 @@ Focus on Main Task Loss for performance.
         
         print(f"Training summary saved to {self.plots_dir}")
     
-    def create_validation_scatter_summary(self, trainer):
-        """Create a summary of the latest validation scatter plots"""
-        print("Creating validation scatter plots summary...")
+    def create_final_validation_summary(self, output_dir: str):
+        """Create a summary of the final validation scatter plots"""
+        print("Creating final validation scatter plots summary...")
         
-        # Find the validation scatter plots directory
-        scatter_plots_dir = None
-        for logger in trainer.loggers:
-            if hasattr(logger, 'log_dir'):
-                potential_dir = os.path.join(logger.log_dir, "validation_scatter_plots")
-                if os.path.exists(potential_dir):
-                    scatter_plots_dir = potential_dir
-                    break
+        # Find the final validation plots directory
+        final_plots_dir = os.path.join(output_dir, "final_validation_plots")
         
-        if scatter_plots_dir is None:
-            print("No validation scatter plots found, skipping summary")
+        if not os.path.exists(final_plots_dir):
+            print("No final validation plots found, skipping summary")
             return
         
-        # Find the latest combined plot
-        combined_plots = glob.glob(os.path.join(scatter_plots_dir, "validation_scatter_combined_epoch_*.png"))
-        if not combined_plots:
-            print("No combined validation scatter plots found")
+        # Find the combined plot
+        combined_plot = os.path.join(final_plots_dir, "final_validation_scatter_combined.png")
+        if not os.path.exists(combined_plot):
+            print("No combined final validation plot found")
             return
         
-        # Get the latest plot
-        latest_plot = max(combined_plots, key=os.path.getctime)
-        
-        # Copy the latest plot to the main plots directory for easy access
+        # Copy the plot to the main plots directory for easy access
         import shutil
-        summary_plot_path = os.path.join(self.plots_dir, 'latest_validation_scatter_plots.png')
-        shutil.copy2(latest_plot, summary_plot_path)
+        summary_plot_path = os.path.join(self.plots_dir, 'final_validation_scatter_plots.png')
+        shutil.copy2(combined_plot, summary_plot_path)
         
-        print(f"📊 Latest validation scatter plots copied to: {summary_plot_path}")
-        print(f"📁 All validation scatter plots available in: {scatter_plots_dir}")
+        print(f"📊 Final validation scatter plots copied to: {summary_plot_path}")
+        print(f"📁 All final validation plots available in: {final_plots_dir}")
         
         # Create a summary text file with information about the plots
         summary_info = {
-            "validation_scatter_plots": {
-                "directory": scatter_plots_dir,
-                "latest_combined_plot": latest_plot,
-                "total_plots_found": len(combined_plots),
-                "description": "Scatter plots showing predicted vs ground truth for each 6DOF dimension",
+            "final_validation_plots": {
+                "directory": final_plots_dir,
+                "combined_plot": combined_plot,
+                "description": "Final validation scatter plots showing predicted vs ground truth for each 6DOF dimension",
                 "dimensions": ["X", "Y", "Z", "Roll", "Pitch", "Yaw"],
                 "plot_types": [
-                    "Individual plots: validation_scatter_[dimension]_epoch_XXX.png",
-                    "Combined plot: validation_scatter_combined_epoch_XXX.png"
-                ]
+                    "Individual plots: final_validation_scatter_[dimension].png",
+                    "Combined plot: final_validation_scatter_combined.png"
+                ],
+                "optimization": "Generated only once at training end (not every epoch) to prevent memory issues"
             }
         }
         
-        summary_file = os.path.join(self.output_dir, 'validation_plots_summary.json')
+        summary_file = os.path.join(output_dir, 'final_validation_plots_summary.json')
         with open(summary_file, 'w') as f:
             json.dump(summary_info, f, indent=2)
         
-        print(f"📄 Validation plots summary saved to: {summary_file}")
+        print(f"📄 Final validation plots summary saved to: {summary_file}")
 
 
 def setup_callbacks(output_dir: str, train_config: Dict) -> List:
@@ -1272,27 +1263,30 @@ def main(args):
         train_dataset,
         batch_size=train_config["batch_size"],
         shuffle=True,
-        num_workers=train_config["num_workers"],
-        pin_memory=True,
-        persistent_workers=True if train_config["num_workers"] > 0 else False
+        num_workers=min(train_config["num_workers"], 2),  # 🔧 limit worker number to prevent memory leaks
+        pin_memory=True if torch.cuda.is_available() else False,  # 🔧 use pin_memory only when GPU is available
+        persistent_workers=False,  # 🔧 disable persistent_workers to prevent memory accumulation
+        drop_last=True  # 🔧 drop last incomplete batch
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=train_config["batch_size"],
         shuffle=False,
-        num_workers=train_config["num_workers"],
-        pin_memory=True,
-        persistent_workers=True if train_config["num_workers"] > 0 else False
+        num_workers=min(train_config["num_workers"], 2),  # 🔧 limit worker number to prevent memory leaks
+        pin_memory=True if torch.cuda.is_available() else False,  # 🔧 use pin_memory only when GPU is available
+        persistent_workers=False,  # 🔧 disable persistent_workers to prevent memory accumulation
+        drop_last=False
     )
     
     test_loader = DataLoader(
         test_dataset,
         batch_size=train_config["batch_size"],
         shuffle=False,
-        num_workers=train_config["num_workers"],
-        pin_memory=True,
-        persistent_workers=True if train_config["num_workers"] > 0 else False
+        num_workers=min(train_config["num_workers"], 2),  # 🔧 limit worker number to prevent memory leaks
+        pin_memory=True if torch.cuda.is_available() else False,  # 🔧 use pin_memory only when GPU is available
+        persistent_workers=False,  # 🔧 disable persistent_workers to prevent memory accumulation
+        drop_last=False
     )
     
     # Test a single batch to verify data loading
@@ -1377,8 +1371,12 @@ def main(args):
         # Create training summary
         visualizer.create_training_summary(trainer, model)
         
-        # Create validation scatter plots summary
-        visualizer.create_validation_scatter_summary(trainer)
+        # 🔧 optimize: generate final validation scatter plots after training (not every epoch)
+        print("📊 generating final validation scatter plots...")
+        model.generate_final_validation_plots(output_dir=run_output_dir)
+        
+        # Create final validation scatter plots summary (update to use final plots)
+        visualizer.create_final_validation_summary(run_output_dir)
     
         # Test model
         print("Testing model...")
@@ -1392,7 +1390,7 @@ def main(args):
         print(f"📊 Results saved to: {run_output_dir}")
         print(f"📈 View training logs: tensorboard --logdir {os.path.join(run_output_dir, 'logs')}")
         print(f"💾 Best model checkpoint: {callbacks[0].best_model_path}")
-        print(f"📊 Validation scatter plots: {os.path.join(run_output_dir, 'logs', 'cardiac_dreamer', 'version_0', 'validation_scatter_plots')}")
+        print(f"📊 Final validation plots: {os.path.join(run_output_dir, 'final_validation_plots')}")
         
     except Exception as e:
         print(f"❌ Training failed: {e}")

@@ -17,6 +17,7 @@ import pytorch_lightning as pl
 from typing import Dict, Any, Tuple, Optional, List
 import matplotlib.pyplot as plt
 import numpy as np
+import gc  # 添加垃圾回收
 
 from src.models.backbone import get_resnet34_encoder
 from src.models.dreamer_channel import get_dreamer_channel, pool_features
@@ -77,6 +78,10 @@ class CardiacDreamerSystem(pl.LightningModule):
         
         # Initialize validation step outputs collection for scatter plots
         self.validation_step_outputs = []
+        
+        # 添加記憶體管理參數
+        self.max_validation_outputs = 1000  # 限制驗證輸出數量
+        self.max_test_outputs = 1000        # 限制測試輸出數量
         
         self.backbone = get_resnet34_encoder(in_channels=in_channels, pretrained=use_pretrained)
         
@@ -292,11 +297,18 @@ class CardiacDreamerSystem(pl.LightningModule):
             self.log("val_total_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
             self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)
             self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
-        # Collect predictions and ground truth for scatter plots
-        self.validation_step_outputs.append({
-            "predicted_action_composed": predicted_composed_action.detach().cpu(),
-            "target_action_composed_gt": at1_6dof_gt.detach().cpu()
-        })
+        
+        # 🔧 修復記憶體洩漏：限制累積數量並確保tensor移到CPU
+        if len(self.validation_step_outputs) < self.max_validation_outputs:
+            # Collect predictions and ground truth for scatter plots
+            self.validation_step_outputs.append({
+                "predicted_action_composed": predicted_composed_action.detach().cpu().clone(),
+                "target_action_composed_gt": at1_6dof_gt.detach().cpu().clone()
+            })
+        
+        # 🔧 定期清理GPU記憶體
+        if batch_idx % 50 == 0:  # 每50個batch清理一次
+            torch.cuda.empty_cache()
         
         return total_loss
     
@@ -337,22 +349,29 @@ class CardiacDreamerSystem(pl.LightningModule):
             self.log("test_main_task_loss", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
             self.log("test_main_task_mse", mse_main_task, on_step=False, on_epoch=True)
             self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
-        self.test_step_outputs.append({
-            "test_total_loss": total_loss,
-            "test_main_task_mse": mse_main_task,
-            "predicted_action_composed": predicted_composed_action,
-            "target_action_composed_gt": at1_6dof_gt,
-            "a_prime_t2_hat": a_prime_t2_hat,
-            "target_a_t2_prime_gt": at2_6dof_gt
-        })
+        
+        # 🔧 freeze memory
+        if len(self.test_step_outputs) < self.max_test_outputs:
+            self.test_step_outputs.append({
+                "test_total_loss": total_loss.detach().cpu().clone(),
+                "test_main_task_mse": mse_main_task.detach().cpu().clone(),
+                "predicted_action_composed": predicted_composed_action.detach().cpu().clone(),
+                "target_action_composed_gt": at1_6dof_gt.detach().cpu().clone(),
+                "a_prime_t2_hat": a_prime_t2_hat.detach().cpu().clone(),
+                "target_a_t2_prime_gt": at2_6dof_gt.detach().cpu().clone()
+            })
+        
+        # 🔧 freeze memory
+        if batch_idx % 50 == 0:  # clear cache every 50 batches
+            torch.cuda.empty_cache()
         
         return {
-            "test_total_loss": total_loss,
-            "test_main_task_mse": mse_main_task,
-            "predicted_action_composed": predicted_composed_action,
-            "target_action_composed_gt": at1_6dof_gt,
-            "a_prime_t2_hat": a_prime_t2_hat,
-            "target_a_t2_prime_gt": at2_6dof_gt
+            "test_total_loss": total_loss.detach().cpu(),
+            "test_main_task_mse": mse_main_task.detach().cpu(),
+            "predicted_action_composed": predicted_composed_action.detach().cpu(),
+            "target_action_composed_gt": at1_6dof_gt.detach().cpu(),
+            "a_prime_t2_hat": a_prime_t2_hat.detach().cpu(),
+            "target_a_t2_prime_gt": at2_6dof_gt.detach().cpu()
         }
     
     def on_test_epoch_end(self):
@@ -383,27 +402,54 @@ class CardiacDreamerSystem(pl.LightningModule):
                     self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
             except (RuntimeError, AttributeError):
                 self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
-        # Clear the outputs for next test epoch
+        
+        # 🔧 freeze memory      
         self.test_step_outputs.clear()
+        del all_preds_composed, all_targets_composed_gt
+        gc.collect()
+        torch.cuda.empty_cache()
 
     def on_validation_epoch_end(self):
-        """Generate scatter plots for validation predictions vs ground truth"""
+        """Collect validation data without generating plots (plots generated at training end)"""
         if not self.validation_step_outputs:
             return
         
-        # Check if trainer is available (not available during standalone testing)
-        try:
-            trainer = self.trainer
-            if trainer is None:
-                raise RuntimeError("Trainer is None")
-        except RuntimeError:
-            print("⚠️  Trainer not available - skipping validation scatter plots generation")
-            self.validation_step_outputs.clear()
-            return
         
-        # Concatenate all predictions and ground truth
+        # only keep the last epoch's data for final plot
+        current_epoch = getattr(self, 'current_epoch', 0)
+        
+        # save the current epoch's data to model attribute (for final plot after training)
         all_preds = torch.cat([out["predicted_action_composed"] for out in self.validation_step_outputs])
         all_targets = torch.cat([out["target_action_composed_gt"] for out in self.validation_step_outputs])
+        
+        # save the latest validation data to model attribute
+        self.latest_validation_data = {
+            "predictions": all_preds.clone(),
+            "targets": all_targets.clone(),
+            "epoch": current_epoch
+        }
+        
+        print(f"📊 Validation epoch {current_epoch}: collected {len(all_preds)} samples' predictions")
+        print(f"    will generate scatter plots after training")
+        
+        # 🔧 freeze memory
+        self.validation_step_outputs.clear()
+        del all_preds, all_targets
+        gc.collect()
+        torch.cuda.empty_cache()
+    
+    def generate_final_validation_plots(self, output_dir: str = None):
+        """Generate validation scatter plots at the end of training"""
+        if not hasattr(self, 'latest_validation_data') or self.latest_validation_data is None:
+            print("⚠️ no validation data available for generating scatter plots")
+            return
+        
+        print("📊 generating final validation scatter plots...")
+        
+        # get saved validation data
+        all_preds = self.latest_validation_data["predictions"]
+        all_targets = self.latest_validation_data["targets"]
+        final_epoch = self.latest_validation_data["epoch"]
         
         # Convert to numpy for plotting
         preds_np = all_preds.numpy()
@@ -413,10 +459,16 @@ class CardiacDreamerSystem(pl.LightningModule):
         dim_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw"]
         
         # Create output directory for plots
-        if hasattr(trainer, 'logger') and hasattr(trainer.logger, 'log_dir'):
-            plots_dir = os.path.join(trainer.logger.log_dir, "validation_scatter_plots")
+        if output_dir is None:
+            if hasattr(self, 'trainer') and self.trainer and hasattr(self.trainer, 'logger'):
+                if hasattr(self.trainer.logger, 'log_dir'):
+                    plots_dir = os.path.join(self.trainer.logger.log_dir, "final_validation_plots")
+                else:
+                    plots_dir = "final_validation_plots"
+            else:
+                plots_dir = "final_validation_plots"
         else:
-            plots_dir = "validation_scatter_plots"
+            plots_dir = os.path.join(output_dir, "final_validation_plots")
         
         os.makedirs(plots_dir, exist_ok=True)
         
@@ -445,7 +497,7 @@ class CardiacDreamerSystem(pl.LightningModule):
             # Set labels and title
             plt.xlabel(f'Ground Truth {dim_name}', fontsize=12)
             plt.ylabel(f'Predicted {dim_name}', fontsize=12)
-            plt.title(f'Validation: Predicted vs Ground Truth - {dim_name}\nCorr: {correlation:.3f}, MSE: {mse:.4f}', fontsize=14)
+            plt.title(f'Final Validation: Predicted vs Ground Truth - {dim_name}\nCorr: {correlation:.3f}, MSE: {mse:.4f}', fontsize=14)
             plt.legend()
             plt.grid(True, alpha=0.3)
             
@@ -453,8 +505,7 @@ class CardiacDreamerSystem(pl.LightningModule):
             plt.axis('equal')
             
             # Save plot
-            current_epoch = getattr(self, 'current_epoch', 0)
-            plot_path = os.path.join(plots_dir, f'validation_scatter_{dim_name.lower()}_epoch_{current_epoch:03d}.png')
+            plot_path = os.path.join(plots_dir, f'final_validation_scatter_{dim_name.lower()}.png')
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             plt.close()
         
@@ -483,21 +534,24 @@ class CardiacDreamerSystem(pl.LightningModule):
             axes[i].grid(True, alpha=0.3)
             axes[i].set_aspect('equal', adjustable='box')
         
-        current_epoch = getattr(self, 'current_epoch', 0)
-        plt.suptitle(f'Validation Predictions vs Ground Truth - Epoch {current_epoch}', fontsize=16)
+        plt.suptitle(f'Final Validation Results - Epoch {final_epoch} ({len(all_preds)} samples)', fontsize=16)
         plt.tight_layout()
         
         # Save combined plot
-        combined_plot_path = os.path.join(plots_dir, f'validation_scatter_combined_epoch_{current_epoch:03d}.png')
+        combined_plot_path = os.path.join(plots_dir, f'final_validation_scatter_combined.png')
         plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"📊 Validation scatter plots saved to: {plots_dir}")
-        print(f"   - Individual plots: validation_scatter_[dimension]_epoch_{current_epoch:03d}.png")
-        print(f"   - Combined plot: validation_scatter_combined_epoch_{current_epoch:03d}.png")
+        print(f"📊 final validation scatter plots saved to: {plots_dir}")
+        print(f"   - individual plots: final_validation_scatter_[dimension].png")
+        print(f"   - combined plot: final_validation_scatter_combined.png")
+        print(f"   - based on epoch {final_epoch} with {len(all_preds)} samples")
         
-        # Clear outputs for next epoch
-        self.validation_step_outputs.clear()
+        # 🔧 freeze memory
+        del all_preds, all_targets, preds_np, targets_np
+        self.latest_validation_data = None  # clear saved data
+        gc.collect()
+        torch.cuda.empty_cache()
 
 def get_cardiac_dreamer_system(
     token_type: str = "channel",
