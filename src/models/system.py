@@ -20,6 +20,7 @@ import numpy as np
 
 from src.models.backbone import get_resnet34_encoder
 from src.models.dreamer_channel import get_dreamer_channel, pool_features
+from src.models.dreamer_patch import get_dreamer_patch, pool_patch_features
 from src.models.guidance import get_guidance_layer
 from src.utils.transformation_utils import dof6_to_matrix, matrix_to_dof6, matrix_inverse
 
@@ -87,8 +88,16 @@ class CardiacDreamerSystem(pl.LightningModule):
                 feature_dim=feature_dim, 
                 use_flash_attn=use_flash_attn
             )
+        elif token_type == "patch":
+            self.dreamer = get_dreamer_patch(
+                d_model=d_model,
+                nhead=nhead,
+                num_layers=num_layers,
+                in_channels=512,  # ResNet output channels
+                use_flash_attn=use_flash_attn
+            )
         else:
-            raise ValueError(f"Unsupported token_type: {token_type}")
+            raise ValueError(f"Unsupported token_type: {token_type}. Supported types: 'channel', 'patch'")
         
         self.guidance = get_guidance_layer(
             feature_dim=512, 
@@ -120,13 +129,27 @@ class CardiacDreamerSystem(pl.LightningModule):
         batch_size = image_t1.shape[0]
         
         feature_map_t1 = self.backbone(image_t1)
-        channel_tokens_t1 = feature_map_t1.reshape(batch_size, 512, -1)
         
-        reconstructed_tokens_t1, _, predicted_next_feature_tokens_f_hat_t2 = self.dreamer(
-            channel_tokens_t1, a_hat_t1_to_t2_gt
-        )
+        if self.token_type == "channel":
+            channel_tokens_t1 = feature_map_t1.reshape(batch_size, 512, -1)
+            
+            reconstructed_tokens_t1, _, predicted_next_feature_tokens_f_hat_t2 = self.dreamer(
+                channel_tokens_t1, a_hat_t1_to_t2_gt
+            )
+            
+            pooled_f_hat_t2 = pool_features(predicted_next_feature_tokens_f_hat_t2)
+            
+        elif self.token_type == "patch":
+            # For patch tokens, pass feature map directly
+            reconstructed_tokens_t1, _, predicted_next_feature_tokens_f_hat_t2 = self.dreamer(
+                feature_map_t1, a_hat_t1_to_t2_gt
+            )
+            
+            pooled_f_hat_t2 = pool_patch_features(predicted_next_feature_tokens_f_hat_t2)
+            
+        else:
+            raise ValueError(f"Unsupported token_type: {self.token_type}")
         
-        pooled_f_hat_t2 = pool_features(predicted_next_feature_tokens_f_hat_t2)
         a_prime_t2_hat = self.guidance(pooled_f_hat_t2)
         
         T_a_hat_t1_to_t2_gt = dof6_to_matrix(a_hat_t1_to_t2_gt)

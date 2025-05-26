@@ -3,11 +3,11 @@
 
 model:
   # Model architecture parameters
-  token_type: "channel"           # Token strategy (channel/spatial)
+  token_type: "patch"             # Token strategy (channel/patch) - NEW: patch uses spatial tokens
   d_model: 768                    # Transformer model dimension
   num_heads: 12                   # Number of attention heads
   num_layers: 6                   # Number of transformer layers
-  feature_dim: 49                 # Spatial feature dimension (7x7=49)
+  feature_dim: 49                 # Spatial feature dimension (7x7=49) - used for channel mode
   in_channels: 1                  # Input image channels (grayscale)
   use_pretrained: true            # Use ImageNet pretrained ResNet34
   
@@ -67,9 +67,10 @@ experiment:
   # Tags for experiment organization
   tags:
     - "data_normalized"           # Data normalization implemented
+    - "patch_tokens"              # NEW: Using patch token approach
     - "paper_formulation"
     - "cross_patient"
     - "stable_training"
     
   # Notes
-  description: "Cardiac Dreamer with data normalization and paper's loss formulation" 
+  description: "Cardiac Dreamer with patch tokens - each spatial location as 512-dim token" 
