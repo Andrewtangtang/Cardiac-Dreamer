@@ -1014,8 +1014,8 @@ class TrainingVisualizer:
             final_rel_error = val_rel_error.iloc[-1]['val_main_relative_error_avg'] if not val_rel_error.empty else 'N/A'
             
             metrics_text = f"""Final Metrics:
-Val Loss: {final_metrics.get('val_loss', 'N/A'):.4f}
-Main Task Loss: {final_metrics.get('val_main_task_loss', 'N/A'):.4f}
+Val Loss: {final_metrics.get('val_loss', 'N/A'):.4f if isinstance(final_metrics.get('val_loss', 'N/A'), (int, float)) else final_metrics.get('val_loss', 'N/A')}
+Main Task Loss: {final_metrics.get('val_main_task_loss', 'N/A'):.4f if isinstance(final_metrics.get('val_main_task_loss', 'N/A'), (int, float)) else final_metrics.get('val_main_task_loss', 'N/A')}
 Combined Accuracy: {final_acc_combined:.3f if final_acc_combined != 'N/A' else 'N/A'}
 Direction Accuracy: {final_acc_direction:.3f if final_acc_direction != 'N/A' else 'N/A'}
 Relative Error: {final_rel_error:.3f if final_rel_error != 'N/A' else 'N/A'}
