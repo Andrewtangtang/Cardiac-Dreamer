@@ -343,6 +343,16 @@ class CardiacDreamerSystem(pl.LightningModule):
         if not self.validation_step_outputs:
             return
         
+        # Check if trainer is available (not available during standalone testing)
+        try:
+            trainer = self.trainer
+            if trainer is None:
+                raise RuntimeError("Trainer is None")
+        except RuntimeError:
+            print("⚠️  Trainer not available - skipping validation scatter plots generation")
+            self.validation_step_outputs.clear()
+            return
+        
         # Concatenate all predictions and ground truth
         all_preds = torch.cat([out["predicted_action_composed"] for out in self.validation_step_outputs])
         all_targets = torch.cat([out["target_action_composed_gt"] for out in self.validation_step_outputs])
@@ -355,8 +365,8 @@ class CardiacDreamerSystem(pl.LightningModule):
         dim_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw"]
         
         # Create output directory for plots
-        if hasattr(self.trainer, 'logger') and hasattr(self.trainer.logger, 'log_dir'):
-            plots_dir = os.path.join(self.trainer.logger.log_dir, "validation_scatter_plots")
+        if hasattr(trainer, 'logger') and hasattr(trainer.logger, 'log_dir'):
+            plots_dir = os.path.join(trainer.logger.log_dir, "validation_scatter_plots")
         else:
             plots_dir = "validation_scatter_plots"
         
@@ -395,7 +405,8 @@ class CardiacDreamerSystem(pl.LightningModule):
             plt.axis('equal')
             
             # Save plot
-            plot_path = os.path.join(plots_dir, f'validation_scatter_{dim_name.lower()}_epoch_{self.current_epoch:03d}.png')
+            current_epoch = getattr(self, 'current_epoch', 0)
+            plot_path = os.path.join(plots_dir, f'validation_scatter_{dim_name.lower()}_epoch_{current_epoch:03d}.png')
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             plt.close()
         
@@ -424,17 +435,18 @@ class CardiacDreamerSystem(pl.LightningModule):
             axes[i].grid(True, alpha=0.3)
             axes[i].set_aspect('equal', adjustable='box')
         
-        plt.suptitle(f'Validation Predictions vs Ground Truth - Epoch {self.current_epoch}', fontsize=16)
+        current_epoch = getattr(self, 'current_epoch', 0)
+        plt.suptitle(f'Validation Predictions vs Ground Truth - Epoch {current_epoch}', fontsize=16)
         plt.tight_layout()
         
         # Save combined plot
-        combined_plot_path = os.path.join(plots_dir, f'validation_scatter_combined_epoch_{self.current_epoch:03d}.png')
+        combined_plot_path = os.path.join(plots_dir, f'validation_scatter_combined_epoch_{current_epoch:03d}.png')
         plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
         print(f"📊 Validation scatter plots saved to: {plots_dir}")
-        print(f"   - Individual plots: validation_scatter_[dimension]_epoch_{self.current_epoch:03d}.png")
-        print(f"   - Combined plot: validation_scatter_combined_epoch_{self.current_epoch:03d}.png")
+        print(f"   - Individual plots: validation_scatter_[dimension]_epoch_{current_epoch:03d}.png")
+        print(f"   - Combined plot: validation_scatter_combined_epoch_{current_epoch:03d}.png")
         
         # Clear outputs for next epoch
         self.validation_step_outputs.clear()
