@@ -15,6 +15,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from typing import Dict, Any, Tuple, Optional, List
+import matplotlib.pyplot as plt
+import numpy as np
 
 from src.models.backbone import get_resnet34_encoder
 from src.models.dreamer_channel import get_dreamer_channel, pool_features
@@ -45,7 +47,6 @@ class CardiacDreamerSystem(pl.LightningModule):
         smooth_l1_beta: Beta parameter for SmoothL1Loss (default: 1.0)
         use_flash_attn: Whether to use flash attention (default: True)
         primary_task_only: If True, only use main task loss (at1 prediction) (default: False)
-        accuracy_tolerance: Tolerance ratio for accuracy computation (default: 0.5)
     """
     def __init__(
         self,
@@ -62,8 +63,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         lambda_t2_action: float = 1.0,  # Weight for auxiliary t2 action loss
         smooth_l1_beta: float = 1.0, # Added beta for SmoothL1Loss
         use_flash_attn: bool = True,
-        primary_task_only: bool = False,  # If True, only use main task loss (at1 prediction)
-        accuracy_tolerance: float = 0.5  # Tolerance ratio for accuracy computation
+        primary_task_only: bool = False  # If True, only use main task loss (at1 prediction)
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -73,10 +73,12 @@ class CardiacDreamerSystem(pl.LightningModule):
         self.lambda_t2_action = lambda_t2_action
         self.lr = lr
         self.weight_decay = weight_decay
-        self.accuracy_tolerance = accuracy_tolerance
         
         # Initialize test step outputs collection for PyTorch Lightning v2.0.0 compatibility
         self.test_step_outputs = []
+        
+        # Initialize validation step outputs collection for scatter plots
+        self.validation_step_outputs = []
         
         self.backbone = get_resnet34_encoder(in_channels=in_channels, pretrained=use_pretrained)
         
@@ -99,75 +101,6 @@ class CardiacDreamerSystem(pl.LightningModule):
         self.smooth_l1_loss = nn.SmoothL1Loss(beta=smooth_l1_beta)
         self.test_mse_metric = torch.nn.MSELoss() # For final MSE reporting in test_epoch_end
 
-    def compute_accuracy_metrics(
-        self,
-        predicted_action: torch.Tensor,
-        target_action: torch.Tensor,
-        tolerance_ratio: Optional[float] = None
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Compute accuracy metrics for normalized data
-        
-        Args:
-            predicted_action: Predicted action [batch_size, 6]
-            target_action: Ground truth action [batch_size, 6]
-            tolerance_ratio: Tolerance ratio for relative error (default: use self.accuracy_tolerance)
-        
-        Returns:
-            Dictionary containing various accuracy metrics
-        """
-        if tolerance_ratio is None:
-            tolerance_ratio = self.accuracy_tolerance
-            
-        batch_size = predicted_action.shape[0]
-        
-        # 1. Direction consistency check (same sign)
-        sign_consistency = (torch.sign(predicted_action) == torch.sign(target_action)).float()
-        
-        # 2. Relative error computation (suitable for normalized data)
-        # Add small epsilon to avoid division by zero
-        epsilon = 1e-8
-        relative_error = torch.abs(predicted_action - target_action) / (torch.abs(target_action) + epsilon)
-        
-        # 3. Accuracy within tolerance
-        within_tolerance = (relative_error <= tolerance_ratio).float()
-        
-        # 4. Combined accuracy (direction consistency + tolerance)
-        direction_and_tolerance = sign_consistency * within_tolerance
-        
-        # 5. Per-axis accuracy
-        axis_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw"]
-        axis_accuracies = {}
-        
-        for i, axis_name in enumerate(axis_names):
-            axis_accuracies[f"acc_{axis_name.lower()}_direction"] = sign_consistency[:, i].mean()
-            axis_accuracies[f"acc_{axis_name.lower()}_tolerance"] = within_tolerance[:, i].mean()
-            axis_accuracies[f"acc_{axis_name.lower()}_combined"] = direction_and_tolerance[:, i].mean()
-        
-        # 6. Overall accuracy metrics
-        overall_metrics = {
-            # Direction accuracy (all axes correct)
-            "acc_direction_all_axes": (sign_consistency.sum(dim=1) == 6).float().mean(),
-            "acc_direction_avg": sign_consistency.mean(),
-            
-            # Tolerance accuracy (all axes within tolerance)
-            "acc_tolerance_all_axes": (within_tolerance.sum(dim=1) == 6).float().mean(),
-            "acc_tolerance_avg": within_tolerance.mean(),
-            
-            # Combined accuracy (direction correct and within tolerance)
-            "acc_combined_all_axes": (direction_and_tolerance.sum(dim=1) == 6).float().mean(),
-            "acc_combined_avg": direction_and_tolerance.mean(),
-            
-            # Average relative error
-            "relative_error_avg": relative_error.mean(),
-            "relative_error_std": relative_error.std(),
-        }
-        
-        # Merge all metrics
-        all_metrics = {**axis_accuracies, **overall_metrics}
-        
-        return all_metrics
-    
     def forward(
         self, 
         image_t1: torch.Tensor, 
@@ -259,22 +192,15 @@ class CardiacDreamerSystem(pl.LightningModule):
         if self.hparams.primary_task_only:
             # Only use main task loss - corresponds to evaluation mode
             total_loss = main_task_loss
-            combined_action_loss = main_task_loss
         else:
             # Full training loss - includes auxiliary tasks to help training
-            combined_action_loss = main_task_loss + self.lambda_t2_action * aux_t2_action_loss
-            total_loss = combined_action_loss + self.lambda_latent * aux_latent_loss
+            total_loss = main_task_loss + self.lambda_t2_action * aux_t2_action_loss + self.lambda_latent * aux_latent_loss
         
         loss_dict = {
             "total_loss": total_loss,
             "main_task_loss": main_task_loss,  # This is the main metric we care about
-            "combined_action_loss": combined_action_loss,
             "aux_t2_action_loss": aux_t2_action_loss,
-            "aux_latent_loss": aux_latent_loss,
-            # Maintain backward compatibility
-            "action_loss_t1_prime": main_task_loss,
-            "action_loss_t2_prime": aux_t2_action_loss,
-            "latent_loss": aux_latent_loss
+            "aux_latent_loss": aux_latent_loss
         }
         return total_loss, loss_dict
     
@@ -305,12 +231,11 @@ class CardiacDreamerSystem(pl.LightningModule):
             at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
+        # Simplified logging - only essential metrics
         self.log("train_total_loss", total_loss, prog_bar=True, on_step=True, on_epoch=True)
-        self.log("train_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=True, on_epoch=True)  # Main metric to monitor
-        self.log("train_combined_action_loss", loss_dict["combined_action_loss"], on_step=True, on_epoch=True)
-        self.log("train_action_loss_t1p", loss_dict["action_loss_t1_prime"], on_step=False, on_epoch=True)
-        self.log("train_action_loss_t2p", loss_dict["action_loss_t2_prime"], on_step=False, on_epoch=True)
-        self.log("train_latent_loss", loss_dict["latent_loss"], on_step=True, on_epoch=True)
+        self.log("train_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=True, on_epoch=True)
+        self.log("train_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        self.log("train_aux_latent_loss", loss_dict["aux_latent_loss"], on_step=False, on_epoch=True)
         
         return total_loss
     
@@ -333,26 +258,17 @@ class CardiacDreamerSystem(pl.LightningModule):
             at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
-        # Compute accuracy metrics
-        main_task_accuracy = self.compute_accuracy_metrics(predicted_composed_action, at1_6dof_gt)
-        aux_task_accuracy = self.compute_accuracy_metrics(a_prime_t2_hat, at2_6dof_gt)
+        # Simplified logging - only essential metrics
+        self.log("val_total_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        self.log("val_aux_latent_loss", loss_dict["aux_latent_loss"], on_step=False, on_epoch=True)
         
-        # Log losses
-        self.log("val_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
-        self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)  # Main metric to monitor
-        self.log("val_combined_action_loss", loss_dict["combined_action_loss"], on_step=False, on_epoch=True)
-        self.log("val_action_loss_t1p", loss_dict["action_loss_t1_prime"], on_step=False, on_epoch=True)
-        self.log("val_action_loss_t2p", loss_dict["action_loss_t2_prime"], on_step=False, on_epoch=True)
-        self.log("val_latent_loss", loss_dict["latent_loss"], on_step=False, on_epoch=True)
-        
-        # Log main task accuracy metrics
-        for metric_name, metric_value in main_task_accuracy.items():
-            self.log(f"val_main_{metric_name}", metric_value, on_step=False, on_epoch=True)
-        
-        # Log auxiliary task accuracy metrics (selective)
-        self.log("val_aux_acc_combined_avg", aux_task_accuracy["acc_combined_avg"], on_step=False, on_epoch=True)
-        self.log("val_aux_acc_direction_avg", aux_task_accuracy["acc_direction_avg"], on_step=False, on_epoch=True)
-        self.log("val_aux_relative_error_avg", aux_task_accuracy["relative_error_avg"], on_step=False, on_epoch=True)
+        # Collect predictions and ground truth for scatter plots
+        self.validation_step_outputs.append({
+            "predicted_action_composed": predicted_composed_action.detach().cpu(),
+            "target_action_composed_gt": at1_6dof_gt.detach().cpu()
+        })
         
         return total_loss
     
@@ -375,49 +291,32 @@ class CardiacDreamerSystem(pl.LightningModule):
             at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
-        # Compute accuracy metrics
-        main_task_accuracy = self.compute_accuracy_metrics(predicted_composed_action, at1_6dof_gt)
-        aux_task_accuracy = self.compute_accuracy_metrics(a_prime_t2_hat, at2_6dof_gt)
-        
         # For reporting, calculate MSE of the primary composed action prediction
-        mse_composed_action = F.mse_loss(predicted_composed_action, at1_6dof_gt)
+        mse_main_task = F.mse_loss(predicted_composed_action, at1_6dof_gt)
         
-        # Log losses
+        # Simplified logging - only essential metrics
         self.log("test_total_loss", total_loss, on_step=False, on_epoch=True)
-        self.log("test_combined_action_loss", loss_dict["combined_action_loss"], on_step=False, on_epoch=True)
-        self.log("test_action_loss_t1p", loss_dict["action_loss_t1_prime"], on_step=False, on_epoch=True)
-        self.log("test_action_loss_t2p", loss_dict["action_loss_t2_prime"], on_step=False, on_epoch=True)
-        self.log("test_latent_loss", loss_dict["latent_loss"], on_step=False, on_epoch=True)
-        self.log("test_mse_composed_action", mse_composed_action, on_step=False, on_epoch=True)
-        
-        # Log main task accuracy metrics
-        for metric_name, metric_value in main_task_accuracy.items():
-            self.log(f"test_main_{metric_name}", metric_value, on_step=False, on_epoch=True)
-        
-        # Log auxiliary task accuracy metrics
-        for metric_name, metric_value in aux_task_accuracy.items():
-            self.log(f"test_aux_{metric_name}", metric_value, on_step=False, on_epoch=True)
+        self.log("test_main_task_loss", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
+        self.log("test_main_task_mse", mse_main_task, on_step=False, on_epoch=True)
+        self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        self.log("test_aux_latent_loss", loss_dict["aux_latent_loss"], on_step=False, on_epoch=True)
         
         self.test_step_outputs.append({
             "test_total_loss": total_loss,
-            "test_mse_composed_action": mse_composed_action,
+            "test_main_task_mse": mse_main_task,
             "predicted_action_composed": predicted_composed_action,
             "target_action_composed_gt": at1_6dof_gt,
             "a_prime_t2_hat": a_prime_t2_hat,
-            "target_a_t2_prime_gt": at2_6dof_gt,
-            "main_task_accuracy": main_task_accuracy,
-            "aux_task_accuracy": aux_task_accuracy
+            "target_a_t2_prime_gt": at2_6dof_gt
         })
         
         return {
             "test_total_loss": total_loss,
-            "test_mse_composed_action": mse_composed_action,
+            "test_main_task_mse": mse_main_task,
             "predicted_action_composed": predicted_composed_action,
             "target_action_composed_gt": at1_6dof_gt,
             "a_prime_t2_hat": a_prime_t2_hat,
-            "target_a_t2_prime_gt": at2_6dof_gt,
-            "main_task_accuracy": main_task_accuracy,
-            "aux_task_accuracy": aux_task_accuracy
+            "target_a_t2_prime_gt": at2_6dof_gt
         }
     
     def on_test_epoch_end(self):
@@ -428,21 +327,117 @@ class CardiacDreamerSystem(pl.LightningModule):
         all_preds_composed = torch.cat([out["predicted_action_composed"] for out in self.test_step_outputs])
         all_targets_composed_gt = torch.cat([out["target_action_composed_gt"] for out in self.test_step_outputs])
         
-        overall_mse_composed = F.mse_loss(all_preds_composed, all_targets_composed_gt)
-        self.log("test_final_mse_composed", overall_mse_composed)
+        overall_mse_main_task = F.mse_loss(all_preds_composed, all_targets_composed_gt)
+        self.log("test_final_main_task_mse", overall_mse_main_task)
         
-        per_dim_mse_composed = torch.mean((all_preds_composed - all_targets_composed_gt) ** 2, dim=0)
+        per_dim_mse_main_task = torch.mean((all_preds_composed - all_targets_composed_gt) ** 2, dim=0)
         dim_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw"]
-        for i, dim_mse in enumerate(per_dim_mse_composed):
-            self.log(f"test_mse_composed_{dim_names[i]}", dim_mse)
-
-        # Compute final accuracy metrics across all test samples
-        final_main_accuracy = self.compute_accuracy_metrics(all_preds_composed, all_targets_composed_gt)
-        for metric_name, metric_value in final_main_accuracy.items():
-            self.log(f"test_final_main_{metric_name}", metric_value)
+        for i, dim_mse in enumerate(per_dim_mse_main_task):
+            self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
 
         # Clear the outputs for next test epoch
         self.test_step_outputs.clear()
+
+    def on_validation_epoch_end(self):
+        """Generate scatter plots for validation predictions vs ground truth"""
+        if not self.validation_step_outputs:
+            return
+        
+        # Concatenate all predictions and ground truth
+        all_preds = torch.cat([out["predicted_action_composed"] for out in self.validation_step_outputs])
+        all_targets = torch.cat([out["target_action_composed_gt"] for out in self.validation_step_outputs])
+        
+        # Convert to numpy for plotting
+        preds_np = all_preds.numpy()
+        targets_np = all_targets.numpy()
+        
+        # Create scatter plots for each 6DOF dimension
+        dim_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw"]
+        
+        # Create output directory for plots
+        if hasattr(self.trainer, 'logger') and hasattr(self.trainer.logger, 'log_dir'):
+            plots_dir = os.path.join(self.trainer.logger.log_dir, "validation_scatter_plots")
+        else:
+            plots_dir = "validation_scatter_plots"
+        
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        # Generate individual scatter plots for each dimension
+        for i, dim_name in enumerate(dim_names):
+            plt.figure(figsize=(8, 8))
+            
+            # Extract data for this dimension
+            pred_dim = preds_np[:, i]
+            target_dim = targets_np[:, i]
+            
+            # Create scatter plot
+            plt.scatter(target_dim, pred_dim, alpha=0.6, s=20, color='blue', edgecolors='black', linewidth=0.5)
+            
+            # Add perfect prediction line (y=x)
+            min_val = min(target_dim.min(), pred_dim.min())
+            max_val = max(target_dim.max(), pred_dim.max())
+            plt.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect Prediction')
+            
+            # Calculate correlation coefficient
+            correlation = np.corrcoef(target_dim, pred_dim)[0, 1]
+            
+            # Calculate MSE for this dimension
+            mse = np.mean((pred_dim - target_dim) ** 2)
+            
+            # Set labels and title
+            plt.xlabel(f'Ground Truth {dim_name}', fontsize=12)
+            plt.ylabel(f'Predicted {dim_name}', fontsize=12)
+            plt.title(f'Validation: Predicted vs Ground Truth - {dim_name}\nCorr: {correlation:.3f}, MSE: {mse:.4f}', fontsize=14)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # Make plot square
+            plt.axis('equal')
+            
+            # Save plot
+            plot_path = os.path.join(plots_dir, f'validation_scatter_{dim_name.lower()}_epoch_{self.current_epoch:03d}.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+        
+        # Create a combined plot with all 6 dimensions
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        axes = axes.flatten()
+        
+        for i, dim_name in enumerate(dim_names):
+            pred_dim = preds_np[:, i]
+            target_dim = targets_np[:, i]
+            
+            axes[i].scatter(target_dim, pred_dim, alpha=0.6, s=15, color='blue', edgecolors='black', linewidth=0.3)
+            
+            # Add perfect prediction line
+            min_val = min(target_dim.min(), pred_dim.min())
+            max_val = max(target_dim.max(), pred_dim.max())
+            axes[i].plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2)
+            
+            # Calculate metrics
+            correlation = np.corrcoef(target_dim, pred_dim)[0, 1]
+            mse = np.mean((pred_dim - target_dim) ** 2)
+            
+            axes[i].set_xlabel(f'Ground Truth {dim_name}', fontsize=10)
+            axes[i].set_ylabel(f'Predicted {dim_name}', fontsize=10)
+            axes[i].set_title(f'{dim_name}\nCorr: {correlation:.3f}, MSE: {mse:.4f}', fontsize=11)
+            axes[i].grid(True, alpha=0.3)
+            axes[i].set_aspect('equal', adjustable='box')
+        
+        plt.suptitle(f'Validation Predictions vs Ground Truth - Epoch {self.current_epoch}', fontsize=16)
+        plt.tight_layout()
+        
+        # Save combined plot
+        combined_plot_path = os.path.join(plots_dir, f'validation_scatter_combined_epoch_{self.current_epoch:03d}.png')
+        plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"📊 Validation scatter plots saved to: {plots_dir}")
+        print(f"   - Individual plots: validation_scatter_[dimension]_epoch_{self.current_epoch:03d}.png")
+        print(f"   - Combined plot: validation_scatter_combined_epoch_{self.current_epoch:03d}.png")
+        
+        # Clear outputs for next epoch
+        self.validation_step_outputs.clear()
 
 def get_cardiac_dreamer_system(
     token_type: str = "channel",
@@ -458,8 +453,7 @@ def get_cardiac_dreamer_system(
     use_flash_attn: bool = True,
     in_channels: int = 1, 
     use_pretrained: bool = True,
-    primary_task_only: bool = False,  # Added missing parameter
-    accuracy_tolerance: float = 0.5  # Added new parameter
+    primary_task_only: bool = False  # Added missing parameter
 ) -> CardiacDreamerSystem:
     return CardiacDreamerSystem(
         token_type=token_type,
@@ -475,8 +469,7 @@ def get_cardiac_dreamer_system(
         use_flash_attn=use_flash_attn,
         in_channels=in_channels, 
         use_pretrained=use_pretrained,
-        primary_task_only=primary_task_only,  # Pass the parameter
-        accuracy_tolerance=accuracy_tolerance  # Pass the new parameter
+        primary_task_only=primary_task_only  # Pass the parameter
     )
 
 
@@ -550,10 +543,9 @@ if __name__ == "__main__":
     
     print(f"\nLoss values:")
     print(f"  Total loss: {total_loss.item():.4f}")
-    print(f"  Combined Action SmoothL1Loss: {loss_dict['combined_action_loss'].item():.4f}")
-    print(f"  Action SmoothL1Loss (t1_prime): {loss_dict['action_loss_t1_prime'].item():.4f}")
-    print(f"  Action SmoothL1Loss (t2_prime): {loss_dict['action_loss_t2_prime'].item():.4f}")
-    print(f"  Latent loss (t1 MSE): {loss_dict['latent_loss'].item():.4f}")
+    print(f"  Main Task Loss: {loss_dict['main_task_loss'].item():.4f}")
+    print(f"  Aux T2 Action Loss: {loss_dict['aux_t2_action_loss'].item():.4f}")
+    print(f"  Aux Latent Loss: {loss_dict['aux_latent_loss'].item():.4f}")
         
     print("\nTesting training_step...")
     system.train()
@@ -575,14 +567,19 @@ if __name__ == "__main__":
     system.eval()
     batch_data_test = (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)
     test_outputs = system.test_step(batch_data_test, 0)
-    print(f"  Test step ran, MSE (composed action): {test_outputs['test_mse_composed_action'].item():.4f}")
+    print(f"  Test step ran, MSE (main task): {test_outputs['test_main_task_mse'].item():.4f}")
 
     print("\nTesting test_epoch_end...")
     system.eval()
     system.on_test_epoch_end()
-    print(f"  Test epoch end ran (check logged metrics for test_final_mse_composed and per-dim MSEs)")
+    print(f"  Test epoch end ran (check logged metrics for test_final_main_task_mse and per-dim MSEs)")
 
-    print("\nBasic tests passed for CardiacDreamerSystem with SmoothL1Loss and new batch structure.")
+    print("\nTesting validation_epoch_end...")
+    system.eval()
+    system.on_validation_epoch_end()
+    print(f"  Validation epoch end ran (check logged metrics for validation scatter plots)")
+
+    print("\nBasic tests passed for CardiacDreamerSystem with simplified loss structure.")
     print("Ensure your DataLoader provides batches with the new structure:")
     print("  (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)")
     print("Where:")

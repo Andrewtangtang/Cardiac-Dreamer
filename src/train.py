@@ -748,8 +748,7 @@ def get_model_config(config_override: Dict = None) -> Dict:
         "lambda_t2_action": 1.0,
         "smooth_l1_beta": 1.0,
         "use_flash_attn": False,
-        "primary_task_only": False,
-        "accuracy_tolerance": 0.5  # Added accuracy tolerance parameter
+        "primary_task_only": False
     }
 
     if config_override:
@@ -898,269 +897,155 @@ class TrainingVisualizer:
         # Print available columns for debugging
         print(f"Available columns in CSV: {list(df.columns)}")
         
-        # Create training plots with accuracy metrics
-        fig, axes = plt.subplots(3, 3, figsize=(20, 16))
+        # Create simplified training plots focusing on essential losses (epoch-based)
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
         
-        # Training and validation loss - use epoch columns
+        # Training and validation total loss (epoch-based)
         train_loss = df[df['train_total_loss_epoch'].notna()]
-        val_loss = df[df['val_loss'].notna()]
+        val_loss = df[df['val_total_loss'].notna()]
         
         if not train_loss.empty and not val_loss.empty:
-            axes[0, 0].plot(train_loss['epoch'], train_loss['train_total_loss_epoch'], label='Train', color='#FF6B6B')
-            axes[0, 0].plot(val_loss['epoch'], val_loss['val_loss'], label='Validation', color='#4ECDC4')
+            axes[0, 0].plot(train_loss['epoch'], train_loss['train_total_loss_epoch'], label='Train', color='#FF6B6B', linewidth=2)
+            axes[0, 0].plot(val_loss['epoch'], val_loss['val_total_loss'], label='Validation', color='#4ECDC4', linewidth=2)
             axes[0, 0].set_xlabel('Epoch')
             axes[0, 0].set_ylabel('Total Loss')
-            axes[0, 0].set_title('Training & Validation Loss')
+            axes[0, 0].set_title('Training & Validation Total Loss')
             axes[0, 0].legend()
-            axes[0, 0].grid(True)
+            axes[0, 0].grid(True, alpha=0.3)
         
-        # Main task loss
+        # Main task loss (most important metric) (epoch-based)
         train_main = df[df['train_main_task_loss_epoch'].notna()]
         val_main = df[df['val_main_task_loss'].notna()]
         
         if not train_main.empty and not val_main.empty:
-            axes[0, 1].plot(train_main['epoch'], train_main['train_main_task_loss_epoch'], label='Train', color='#FF6B6B')
-            axes[0, 1].plot(val_main['epoch'], val_main['val_main_task_loss'], label='Validation', color='#4ECDC4')
+            axes[0, 1].plot(train_main['epoch'], train_main['train_main_task_loss_epoch'], label='Train', color='#FF6B6B', linewidth=2)
+            axes[0, 1].plot(val_main['epoch'], val_main['val_main_task_loss'], label='Validation', color='#4ECDC4', linewidth=2)
             axes[0, 1].set_xlabel('Epoch')
             axes[0, 1].set_ylabel('Main Task Loss')
-            axes[0, 1].set_title('Main Task Loss (at1 Prediction)')
+            axes[0, 1].set_title('Main Task Loss (AT1 Prediction) - Key Metric')
             axes[0, 1].legend()
-            axes[0, 1].grid(True)
+            axes[0, 1].grid(True, alpha=0.3)
         
-        # Learning rate
+        # Learning rate (epoch-based)
         lr_data = df[df['lr-AdamW'].notna()]
         if not lr_data.empty:
-            axes[0, 2].plot(lr_data['epoch'], lr_data['lr-AdamW'], color='#45B7D1')
+            axes[0, 2].plot(lr_data['epoch'], lr_data['lr-AdamW'], color='#45B7D1', linewidth=2)
             axes[0, 2].set_xlabel('Epoch')
             axes[0, 2].set_ylabel('Learning Rate')
             axes[0, 2].set_title('Learning Rate Schedule')
-            axes[0, 2].grid(True)
+            axes[0, 2].grid(True, alpha=0.3)
+            axes[0, 2].set_yscale('log')  # Use log scale for learning rate
         
-        # Main task accuracy metrics
-        val_acc_combined = df[df['val_main_acc_combined_avg'].notna()]
-        val_acc_direction = df[df['val_main_acc_direction_avg'].notna()]
-        val_acc_tolerance = df[df['val_main_acc_tolerance_avg'].notna()]
+        # Auxiliary latent loss (epoch-based)
+        latent_loss = df[df['train_aux_latent_loss_epoch'].notna()]
+        val_latent_loss = df[df['val_aux_latent_loss'].notna()]
         
-        if not val_acc_combined.empty:
-            axes[1, 0].plot(val_acc_combined['epoch'], val_acc_combined['val_main_acc_combined_avg'], 
-                           label='Combined Accuracy', color='#96CEB4', linewidth=2)
-            if not val_acc_direction.empty:
-                axes[1, 0].plot(val_acc_direction['epoch'], val_acc_direction['val_main_acc_direction_avg'], 
-                               label='Direction Accuracy', color='#FECA57', linewidth=2)
-            if not val_acc_tolerance.empty:
-                axes[1, 0].plot(val_acc_tolerance['epoch'], val_acc_tolerance['val_main_acc_tolerance_avg'], 
-                               label='Tolerance Accuracy', color='#FF9FF3', linewidth=2)
-            axes[1, 0].set_xlabel('Epoch')
-            axes[1, 0].set_ylabel('Accuracy')
-            axes[1, 0].set_title('Main Task Accuracy Metrics')
-            axes[1, 0].legend()
-            axes[1, 0].grid(True)
-            axes[1, 0].set_ylim(0, 1)
-        
-        # Per-axis accuracy (combined)
-        axis_names = ['x', 'y', 'z', 'roll', 'pitch', 'yaw']
-        axis_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3']
-        
-        for i, (axis, color) in enumerate(zip(axis_names, axis_colors)):
-            col_name = f'val_main_acc_{axis}_combined'
-            if col_name in df.columns:
-                axis_data = df[df[col_name].notna()]
-                if not axis_data.empty:
-                    axes[1, 1].plot(axis_data['epoch'], axis_data[col_name], 
-                                   label=f'{axis.upper()}', color=color, linewidth=2)
-        
-        axes[1, 1].set_xlabel('Epoch')
-        axes[1, 1].set_ylabel('Combined Accuracy')
-        axes[1, 1].set_title('Per-Axis Combined Accuracy')
-        axes[1, 1].legend()
-        axes[1, 1].grid(True)
-        axes[1, 1].set_ylim(0, 1)
-        
-        # Relative error
-        val_rel_error = df[df['val_main_relative_error_avg'].notna()]
-        if not val_rel_error.empty:
-            axes[1, 2].plot(val_rel_error['epoch'], val_rel_error['val_main_relative_error_avg'], 
-                           color='#FF6B6B', linewidth=2)
-            axes[1, 2].set_xlabel('Epoch')
-            axes[1, 2].set_ylabel('Relative Error')
-            axes[1, 2].set_title('Average Relative Error')
-            axes[1, 2].grid(True)
-        
-        # Component losses - use epoch columns
-        latent_loss = df[df['train_latent_loss_epoch'].notna()]
         if not latent_loss.empty:
-            axes[2, 0].plot(latent_loss['epoch'], latent_loss['train_latent_loss_epoch'], color='#96CEB4')
-            axes[2, 0].set_xlabel('Epoch')
-            axes[2, 0].set_ylabel('Latent Loss')
-            axes[2, 0].set_title('Reconstruction Loss')
-            axes[2, 0].grid(True)
+            axes[1, 0].plot(latent_loss['epoch'], latent_loss['train_aux_latent_loss_epoch'], label='Train', color='#96CEB4', linewidth=2)
+            if not val_latent_loss.empty:
+                axes[1, 0].plot(val_latent_loss['epoch'], val_latent_loss['val_aux_latent_loss'], label='Validation', color='#A8E6CF', linewidth=2)
+            axes[1, 0].set_xlabel('Epoch')
+            axes[1, 0].set_ylabel('Auxiliary Latent Loss')
+            axes[1, 0].set_title('Reconstruction Loss (Auxiliary)')
+            axes[1, 0].legend()
+            axes[1, 0].grid(True, alpha=0.3)
         
-        # Auxiliary task loss
-        aux_loss = df[df['train_action_loss_t2p'].notna()]
-        if not aux_loss.empty:
-            axes[2, 1].plot(aux_loss['epoch'], aux_loss['train_action_loss_t2p'], color='#FECA57')
-            axes[2, 1].set_xlabel('Epoch')
-            axes[2, 1].set_ylabel('Auxiliary Task Loss')
-            axes[2, 1].set_title('t2 Action Prediction Loss')
-            axes[2, 1].grid(True)
+        # Auxiliary t2 action loss (epoch-based)
+        aux_t2_loss = df[df['train_aux_t2_loss_epoch'].notna()]
+        val_aux_t2_loss = df[df['val_aux_t2_loss'].notna()]
         
-        # Final comparison with accuracy metrics
+        if not aux_t2_loss.empty:
+            axes[1, 1].plot(aux_t2_loss['epoch'], aux_t2_loss['train_aux_t2_loss_epoch'], label='Train', color='#FECA57', linewidth=2)
+            if not val_aux_t2_loss.empty:
+                axes[1, 1].plot(val_aux_t2_loss['epoch'], val_aux_t2_loss['val_aux_t2_loss'], label='Validation', color='#FFD93D', linewidth=2)
+            axes[1, 1].set_xlabel('Epoch')
+            axes[1, 1].set_ylabel('Auxiliary T2 Loss')
+            axes[1, 1].set_title('T2 Action Prediction Loss (Auxiliary)')
+            axes[1, 1].legend()
+            axes[1, 1].grid(True, alpha=0.3)
+        
+        # Final metrics summary
         if not val_loss.empty:
             final_metrics = val_loss.iloc[-1]
             
-            # Get final accuracy metrics
-            final_acc_combined = val_acc_combined.iloc[-1]['val_main_acc_combined_avg'] if not val_acc_combined.empty else 'N/A'
-            final_acc_direction = val_acc_direction.iloc[-1]['val_main_acc_direction_avg'] if not val_acc_direction.empty else 'N/A'
-            final_rel_error = val_rel_error.iloc[-1]['val_main_relative_error_avg'] if not val_rel_error.empty else 'N/A'
-            
-            metrics_text = f"""Final Metrics:
-Val Loss: {final_metrics.get('val_loss', 'N/A'):.4f if isinstance(final_metrics.get('val_loss', 'N/A'), (int, float)) else final_metrics.get('val_loss', 'N/A')}
+            metrics_text = f"""Final Metrics (Epoch {int(final_metrics.get('epoch', 0))}):
+
+Total Loss: {final_metrics.get('val_total_loss', 'N/A'):.4f if isinstance(final_metrics.get('val_total_loss', 'N/A'), (int, float)) else final_metrics.get('val_total_loss', 'N/A')}
+
 Main Task Loss: {final_metrics.get('val_main_task_loss', 'N/A'):.4f if isinstance(final_metrics.get('val_main_task_loss', 'N/A'), (int, float)) else final_metrics.get('val_main_task_loss', 'N/A')}
-Combined Accuracy: {final_acc_combined:.3f if final_acc_combined != 'N/A' else 'N/A'}
-Direction Accuracy: {final_acc_direction:.3f if final_acc_direction != 'N/A' else 'N/A'}
-Relative Error: {final_rel_error:.3f if final_rel_error != 'N/A' else 'N/A'}
-Epoch: {final_metrics.get('epoch', 'N/A')}"""
+(This is the key metric for AT1 prediction)
+
+Training completed successfully.
+Focus on Main Task Loss for performance.
+
+📊 Validation scatter plots are generated
+   every epoch in logs/validation_scatter_plots/"""
             
-            axes[2, 2].text(0.1, 0.5, metrics_text, fontsize=11, 
+            axes[1, 2].text(0.1, 0.5, metrics_text, fontsize=11, 
                            verticalalignment='center', fontfamily='monospace')
-            axes[2, 2].set_title('Final Training Metrics')
-            axes[2, 2].axis('off')
+            axes[1, 2].set_title('Final Training Metrics')
+            axes[1, 2].axis('off')
         
         plt.tight_layout()
         plt.savefig(os.path.join(self.plots_dir, 'training_summary.png'), dpi=300, bbox_inches='tight')
         plt.close()
         
-        # Create separate accuracy analysis plot
-        self.create_accuracy_analysis(df)
-        
         print(f"Training summary saved to {self.plots_dir}")
     
-    def create_accuracy_analysis(self, df):
-        """Create detailed accuracy analysis plots"""
-        print("Creating accuracy analysis plots...")
+    def create_validation_scatter_summary(self, trainer):
+        """Create a summary of the latest validation scatter plots"""
+        print("Creating validation scatter plots summary...")
         
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        # Find the validation scatter plots directory
+        scatter_plots_dir = None
+        for logger in trainer.loggers:
+            if hasattr(logger, 'log_dir'):
+                potential_dir = os.path.join(logger.log_dir, "validation_scatter_plots")
+                if os.path.exists(potential_dir):
+                    scatter_plots_dir = potential_dir
+                    break
         
-        # 1. All axes accuracy comparison
-        axis_names = ['x', 'y', 'z', 'roll', 'pitch', 'yaw']
-        axis_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3']
+        if scatter_plots_dir is None:
+            print("No validation scatter plots found, skipping summary")
+            return
         
-        # Direction accuracy per axis
-        for i, (axis, color) in enumerate(zip(axis_names, axis_colors)):
-            col_name = f'val_main_acc_{axis}_direction'
-            if col_name in df.columns:
-                axis_data = df[df[col_name].notna()]
-                if not axis_data.empty:
-                    axes[0, 0].plot(axis_data['epoch'], axis_data[col_name], 
-                                   label=f'{axis.upper()}', color=color, linewidth=2)
+        # Find the latest combined plot
+        combined_plots = glob.glob(os.path.join(scatter_plots_dir, "validation_scatter_combined_epoch_*.png"))
+        if not combined_plots:
+            print("No combined validation scatter plots found")
+            return
         
-        axes[0, 0].set_xlabel('Epoch')
-        axes[0, 0].set_ylabel('Direction Accuracy')
-        axes[0, 0].set_title('Direction Accuracy per Axis')
-        axes[0, 0].legend()
-        axes[0, 0].grid(True)
-        axes[0, 0].set_ylim(0, 1)
+        # Get the latest plot
+        latest_plot = max(combined_plots, key=os.path.getctime)
         
-        # Tolerance accuracy per axis
-        for i, (axis, color) in enumerate(zip(axis_names, axis_colors)):
-            col_name = f'val_main_acc_{axis}_tolerance'
-            if col_name in df.columns:
-                axis_data = df[df[col_name].notna()]
-                if not axis_data.empty:
-                    axes[0, 1].plot(axis_data['epoch'], axis_data[col_name], 
-                                   label=f'{axis.upper()}', color=color, linewidth=2)
+        # Copy the latest plot to the main plots directory for easy access
+        import shutil
+        summary_plot_path = os.path.join(self.plots_dir, 'latest_validation_scatter_plots.png')
+        shutil.copy2(latest_plot, summary_plot_path)
         
-        axes[0, 1].set_xlabel('Epoch')
-        axes[0, 1].set_ylabel('Tolerance Accuracy')
-        axes[0, 1].set_title('Tolerance Accuracy per Axis')
-        axes[0, 1].legend()
-        axes[0, 1].grid(True)
-        axes[0, 1].set_ylim(0, 1)
+        print(f"📊 Latest validation scatter plots copied to: {summary_plot_path}")
+        print(f"📁 All validation scatter plots available in: {scatter_plots_dir}")
         
-        # Combined accuracy per axis
-        for i, (axis, color) in enumerate(zip(axis_names, axis_colors)):
-            col_name = f'val_main_acc_{axis}_combined'
-            if col_name in df.columns:
-                axis_data = df[df[col_name].notna()]
-                if not axis_data.empty:
-                    axes[0, 2].plot(axis_data['epoch'], axis_data[col_name], 
-                                   label=f'{axis.upper()}', color=color, linewidth=2)
+        # Create a summary text file with information about the plots
+        summary_info = {
+            "validation_scatter_plots": {
+                "directory": scatter_plots_dir,
+                "latest_combined_plot": latest_plot,
+                "total_plots_found": len(combined_plots),
+                "description": "Scatter plots showing predicted vs ground truth for each 6DOF dimension",
+                "dimensions": ["X", "Y", "Z", "Roll", "Pitch", "Yaw"],
+                "plot_types": [
+                    "Individual plots: validation_scatter_[dimension]_epoch_XXX.png",
+                    "Combined plot: validation_scatter_combined_epoch_XXX.png"
+                ]
+            }
+        }
         
-        axes[0, 2].set_xlabel('Epoch')
-        axes[0, 2].set_ylabel('Combined Accuracy')
-        axes[0, 2].set_title('Combined Accuracy per Axis')
-        axes[0, 2].legend()
-        axes[0, 2].grid(True)
-        axes[0, 2].set_ylim(0, 1)
+        summary_file = os.path.join(self.output_dir, 'validation_plots_summary.json')
+        with open(summary_file, 'w') as f:
+            json.dump(summary_info, f, indent=2)
         
-        # Overall accuracy metrics comparison
-        val_acc_all_combined = df[df['val_main_acc_combined_all_axes'].notna()]
-        val_acc_all_direction = df[df['val_main_acc_direction_all_axes'].notna()]
-        val_acc_all_tolerance = df[df['val_main_acc_tolerance_all_axes'].notna()]
-        
-        if not val_acc_all_combined.empty:
-            axes[1, 0].plot(val_acc_all_combined['epoch'], val_acc_all_combined['val_main_acc_combined_all_axes'], 
-                           label='All Axes Combined', color='#FF6B6B', linewidth=3)
-        if not val_acc_all_direction.empty:
-            axes[1, 0].plot(val_acc_all_direction['epoch'], val_acc_all_direction['val_main_acc_direction_all_axes'], 
-                           label='All Axes Direction', color='#4ECDC4', linewidth=3)
-        if not val_acc_all_tolerance.empty:
-            axes[1, 0].plot(val_acc_all_tolerance['epoch'], val_acc_all_tolerance['val_main_acc_tolerance_all_axes'], 
-                           label='All Axes Tolerance', color='#45B7D1', linewidth=3)
-        
-        axes[1, 0].set_xlabel('Epoch')
-        axes[1, 0].set_ylabel('Accuracy (All Axes)')
-        axes[1, 0].set_title('Strict All-Axes Accuracy')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True)
-        axes[1, 0].set_ylim(0, 1)
-        
-        # Auxiliary task accuracy
-        val_aux_combined = df[df['val_aux_acc_combined_avg'].notna()]
-        val_aux_direction = df[df['val_aux_acc_direction_avg'].notna()]
-        
-        if not val_aux_combined.empty:
-            axes[1, 1].plot(val_aux_combined['epoch'], val_aux_combined['val_aux_acc_combined_avg'], 
-                           label='Aux Combined', color='#96CEB4', linewidth=2)
-        if not val_aux_direction.empty:
-            axes[1, 1].plot(val_aux_direction['epoch'], val_aux_direction['val_aux_acc_direction_avg'], 
-                           label='Aux Direction', color='#FECA57', linewidth=2)
-        
-        axes[1, 1].set_xlabel('Epoch')
-        axes[1, 1].set_ylabel('Auxiliary Task Accuracy')
-        axes[1, 1].set_title('Auxiliary Task (t2) Accuracy')
-        axes[1, 1].legend()
-        axes[1, 1].grid(True)
-        axes[1, 1].set_ylim(0, 1)
-        
-        # Error analysis
-        val_rel_error = df[df['val_main_relative_error_avg'].notna()]
-        val_rel_error_std = df[df['val_main_relative_error_std'].notna()]
-        
-        if not val_rel_error.empty:
-            axes[1, 2].plot(val_rel_error['epoch'], val_rel_error['val_main_relative_error_avg'], 
-                           label='Mean Relative Error', color='#FF6B6B', linewidth=2)
-            
-            if not val_rel_error_std.empty:
-                # Plot error bands
-                mean_error = val_rel_error['val_main_relative_error_avg']
-                std_error = val_rel_error_std['val_main_relative_error_std']
-                epochs = val_rel_error['epoch']
-                
-                axes[1, 2].fill_between(epochs, mean_error - std_error, mean_error + std_error, 
-                                       alpha=0.3, color='#FF6B6B', label='±1 Std Dev')
-        
-        axes[1, 2].set_xlabel('Epoch')
-        axes[1, 2].set_ylabel('Relative Error')
-        axes[1, 2].set_title('Relative Error Analysis')
-        axes[1, 2].legend()
-        axes[1, 2].grid(True)
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.plots_dir, 'accuracy_analysis.png'), dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"Accuracy analysis saved to {self.plots_dir}")
+        print(f"📄 Validation plots summary saved to: {summary_file}")
 
 
 def setup_callbacks(output_dir: str, train_config: Dict) -> List:
@@ -1417,8 +1302,7 @@ def main(args):
         lambda_t2_action=model_config["lambda_t2_action"],
         smooth_l1_beta=model_config["smooth_l1_beta"],
         use_flash_attn=model_config["use_flash_attn"],
-        primary_task_only=model_config["primary_task_only"],
-        accuracy_tolerance=model_config["accuracy_tolerance"]
+        primary_task_only=model_config["primary_task_only"]
     )
     
     # Print model info
@@ -1477,6 +1361,9 @@ def main(args):
             
         # Create training summary
         visualizer.create_training_summary(trainer, model)
+        
+        # Create validation scatter plots summary
+        visualizer.create_validation_scatter_summary(trainer)
     
         # Test model
         print("Testing model...")
@@ -1490,6 +1377,7 @@ def main(args):
         print(f"📊 Results saved to: {run_output_dir}")
         print(f"📈 View training logs: tensorboard --logdir {os.path.join(run_output_dir, 'logs')}")
         print(f"💾 Best model checkpoint: {callbacks[0].best_model_path}")
+        print(f"📊 Validation scatter plots: {os.path.join(run_output_dir, 'logs', 'cardiac_dreamer', 'version_0', 'validation_scatter_plots')}")
         
     except Exception as e:
         print(f"❌ Training failed: {e}")

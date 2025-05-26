@@ -12,7 +12,7 @@ model:
   use_pretrained: true            # Use ImageNet pretrained ResNet34
   
   # Optimization parameters - WITH DATA NORMALIZATION
-  lr: 3.0e-5                      # Moderate learning rate with normalized data
+  lr: 5.0e-4                    # Moderate learning rate with normalized data
   weight_decay: 1.0e-4            # Balanced weight decay
   
   # Loss function parameters - NORMALIZED DATA VERSION
@@ -21,8 +21,6 @@ model:
   smooth_l1_beta: 1.0             # Standard beta with normalized data
   primary_task_only: false        # Keep false to use both at1 and at2 losses
   
-  # Accuracy monitoring parameters
-  accuracy_tolerance: 0.5         # Tolerance ratio for accuracy computation (50% relative error tolerance)
   
   # Advanced settings
   use_flash_attn: false           # Use flash attention (experimental)
