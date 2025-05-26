@@ -744,7 +744,6 @@ def get_model_config(config_override: Dict = None) -> Dict:
         "use_pretrained": True,
         "lr": 1e-4,
         "weight_decay": 1e-5,
-        "lambda_latent": 0.2,
         "lambda_t2_action": 1.0,
         "smooth_l1_beta": 1.0,
         "use_flash_attn": False,
@@ -752,7 +751,18 @@ def get_model_config(config_override: Dict = None) -> Dict:
     }
 
     if config_override:
-        default_config.update(config_override.get("model", {}))
+        model_override = config_override.get("model", {})
+        default_config.update(model_override)
+        
+        # Ensure numeric parameters are properly converted to float
+        numeric_params = ["lr", "weight_decay", "lambda_t2_action", "smooth_l1_beta"]
+        for param in numeric_params:
+            if param in default_config:
+                try:
+                    default_config[param] = float(default_config[param])
+                except (ValueError, TypeError):
+                    print(f"Warning: Could not convert {param} to float, using default value")
+                    # Keep the default value if conversion fails
 
     return default_config
 
@@ -778,7 +788,27 @@ def get_train_config(config_override: Dict = None) -> Dict:
     }
     
     if config_override:
-        default_config.update(config_override.get("training", {}))
+        training_override = config_override.get("training", {})
+        default_config.update(training_override)
+        
+        # Ensure numeric parameters are properly converted to appropriate types
+        float_params = ["gradient_clip_val"]
+        int_params = ["batch_size", "num_workers", "max_epochs", "early_stop_patience", 
+                     "precision", "accumulate_grad_batches", "check_val_every_n_epoch", "log_every_n_steps"]
+        
+        for param in float_params:
+            if param in default_config:
+                try:
+                    default_config[param] = float(default_config[param])
+                except (ValueError, TypeError):
+                    print(f"Warning: Could not convert {param} to float, using default value")
+        
+        for param in int_params:
+            if param in default_config:
+                try:
+                    default_config[param] = int(default_config[param])
+                except (ValueError, TypeError):
+                    print(f"Warning: Could not convert {param} to int, using default value")
     
     return default_config
 
@@ -936,33 +966,19 @@ class TrainingVisualizer:
             axes[0, 2].grid(True, alpha=0.3)
             axes[0, 2].set_yscale('log')  # Use log scale for learning rate
         
-        # Auxiliary latent loss (epoch-based)
-        latent_loss = df[df['train_aux_latent_loss_epoch'].notna()]
-        val_latent_loss = df[df['val_aux_latent_loss'].notna()]
-        
-        if not latent_loss.empty:
-            axes[1, 0].plot(latent_loss['epoch'], latent_loss['train_aux_latent_loss_epoch'], label='Train', color='#96CEB4', linewidth=2)
-            if not val_latent_loss.empty:
-                axes[1, 0].plot(val_latent_loss['epoch'], val_latent_loss['val_aux_latent_loss'], label='Validation', color='#A8E6CF', linewidth=2)
-            axes[1, 0].set_xlabel('Epoch')
-            axes[1, 0].set_ylabel('Auxiliary Latent Loss')
-            axes[1, 0].set_title('Reconstruction Loss (Auxiliary)')
-            axes[1, 0].legend()
-            axes[1, 0].grid(True, alpha=0.3)
-        
         # Auxiliary t2 action loss (epoch-based)
         aux_t2_loss = df[df['train_aux_t2_loss_epoch'].notna()]
         val_aux_t2_loss = df[df['val_aux_t2_loss'].notna()]
         
         if not aux_t2_loss.empty:
-            axes[1, 1].plot(aux_t2_loss['epoch'], aux_t2_loss['train_aux_t2_loss_epoch'], label='Train', color='#FECA57', linewidth=2)
+            axes[1, 0].plot(aux_t2_loss['epoch'], aux_t2_loss['train_aux_t2_loss_epoch'], label='Train', color='#FECA57', linewidth=2)
             if not val_aux_t2_loss.empty:
-                axes[1, 1].plot(val_aux_t2_loss['epoch'], val_aux_t2_loss['val_aux_t2_loss'], label='Validation', color='#FFD93D', linewidth=2)
-            axes[1, 1].set_xlabel('Epoch')
-            axes[1, 1].set_ylabel('Auxiliary T2 Loss')
-            axes[1, 1].set_title('T2 Action Prediction Loss (Auxiliary)')
-            axes[1, 1].legend()
-            axes[1, 1].grid(True, alpha=0.3)
+                axes[1, 0].plot(val_aux_t2_loss['epoch'], val_aux_t2_loss['val_aux_t2_loss'], label='Validation', color='#FFD93D', linewidth=2)
+            axes[1, 0].set_xlabel('Epoch')
+            axes[1, 0].set_ylabel('Auxiliary T2 Loss')
+            axes[1, 0].set_title('T2 Action Prediction Loss (Auxiliary)')
+            axes[1, 0].legend()
+            axes[1, 0].grid(True, alpha=0.3)
         
         # Final metrics summary
         if not val_loss.empty:
@@ -981,10 +997,10 @@ Focus on Main Task Loss for performance.
 📊 Validation scatter plots are generated
    every epoch in logs/validation_scatter_plots/"""
             
-            axes[1, 2].text(0.1, 0.5, metrics_text, fontsize=11, 
+            axes[1, 1].text(0.1, 0.5, metrics_text, fontsize=11, 
                            verticalalignment='center', fontfamily='monospace')
-            axes[1, 2].set_title('Final Training Metrics')
-            axes[1, 2].axis('off')
+            axes[1, 1].set_title('Final Training Metrics')
+            axes[1, 1].axis('off')
         
         plt.tight_layout()
         plt.savefig(os.path.join(self.plots_dir, 'training_summary.png'), dpi=300, bbox_inches='tight')
@@ -1298,7 +1314,6 @@ def main(args):
         feature_dim=model_config["feature_dim"],
         lr=model_config["lr"],
         weight_decay=model_config["weight_decay"],
-        lambda_latent=model_config["lambda_latent"],
         lambda_t2_action=model_config["lambda_t2_action"],
         smooth_l1_beta=model_config["smooth_l1_beta"],
         use_flash_attn=model_config["use_flash_attn"],

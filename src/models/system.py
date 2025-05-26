@@ -42,7 +42,6 @@ class CardiacDreamerSystem(pl.LightningModule):
         use_pretrained: Whether to use pretrained backbone (default: True)
         lr: Learning rate (default: 1e-4)
         weight_decay: Weight decay for optimizer (default: 1e-5)
-        lambda_latent: Weight for latent loss (default: 0.2)
         lambda_t2_action: Weight for auxiliary t2 action loss (default: 1.0)
         smooth_l1_beta: Beta parameter for SmoothL1Loss (default: 1.0)
         use_flash_attn: Whether to use flash attention (default: True)
@@ -59,7 +58,6 @@ class CardiacDreamerSystem(pl.LightningModule):
         use_pretrained: bool = True,
         lr: float = 1e-4,
         weight_decay: float = 1e-5,
-        lambda_latent: float = 0.2,
         lambda_t2_action: float = 1.0,  # Weight for auxiliary t2 action loss
         smooth_l1_beta: float = 1.0, # Added beta for SmoothL1Loss
         use_flash_attn: bool = True,
@@ -69,7 +67,6 @@ class CardiacDreamerSystem(pl.LightningModule):
         self.save_hyperparameters()
         
         self.token_type = token_type
-        self.lambda_latent = lambda_latent
         self.lambda_t2_action = lambda_t2_action
         self.lr = lr
         self.weight_decay = weight_decay
@@ -170,8 +167,6 @@ class CardiacDreamerSystem(pl.LightningModule):
         self, 
         predicted_action_composed: torch.Tensor,  # Model's predicted composed action
         at1_6dof_gt: torch.Tensor,               # Ground truth at1_6dof from JSON (main task target)
-        reconstructed_channels_t1: torch.Tensor,
-        original_channels_t1: torch.Tensor,
         a_prime_t2_hat: torch.Tensor,            # Model's predicted t2 action
         at2_6dof_gt: torch.Tensor                # Ground truth at2_6dof from JSON (auxiliary task target)
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -179,37 +174,31 @@ class CardiacDreamerSystem(pl.LightningModule):
         Computes losses with configurable weights for main and auxiliary tasks.
         
         Main task: Predict at1_6dof from image and action change (predicted_action_composed vs at1_6dof_gt)
-        Auxiliary tasks: t2 action prediction (a_prime_t2_hat vs at2_6dof_gt) and latent reconstruction
+        Auxiliary task: t2 action prediction (a_prime_t2_hat vs at2_6dof_gt)
+        
+        Note: Removed latent reconstruction loss as it was comparing t1 features incorrectly
         """
         # Main task loss - L_SmoothL1(predicted_action_composed, at1_6dof_gt)
         main_task_loss = self.smooth_l1_loss(predicted_action_composed, at1_6dof_gt)
         
-        # Auxiliary task losses - help with training process
+        # Auxiliary task loss - help with training process
         aux_t2_action_loss = self.smooth_l1_loss(a_prime_t2_hat, at2_6dof_gt)
-        aux_latent_loss = F.mse_loss(reconstructed_channels_t1, original_channels_t1)
         
         # Combine losses based on configuration
         if self.hparams.primary_task_only:
             # Only use main task loss - corresponds to evaluation mode
             total_loss = main_task_loss
         else:
-            # Full training loss - includes auxiliary tasks to help training
-            total_loss = main_task_loss + self.lambda_t2_action * aux_t2_action_loss + self.lambda_latent * aux_latent_loss
+            # Full training loss - includes auxiliary task to help training
+            total_loss = main_task_loss + self.lambda_t2_action * aux_t2_action_loss
         
         loss_dict = {
             "total_loss": total_loss,
             "main_task_loss": main_task_loss,  # This is the main metric we care about
-            "aux_t2_action_loss": aux_t2_action_loss,
-            "aux_latent_loss": aux_latent_loss
+            "aux_t2_action_loss": aux_t2_action_loss
         }
         return total_loss, loss_dict
     
-    def _get_original_channels_t1(self, image_t1: torch.Tensor) -> torch.Tensor:
-        "Helper to get original channel tokens for loss calculation, ensuring no grad."
-        with torch.no_grad():
-            feature_map_t1_original = self.backbone(image_t1)
-            return feature_map_t1_original.reshape(image_t1.shape[0], 512, -1).detach()
-
     def training_step(self, batch: Tuple[torch.Tensor, ...], batch_idx: int) -> torch.Tensor:
         # Batch structure: (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)
         image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt = batch
@@ -217,16 +206,11 @@ class CardiacDreamerSystem(pl.LightningModule):
         system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
         predicted_composed_action = system_outputs["predicted_action_composed"]
-        reconstructed_channels_t1 = system_outputs["reconstructed_channels_t1"]
         a_prime_t2_hat = system_outputs["a_prime_t2_hat"]
-        
-        original_channels_t1 = self._get_original_channels_t1(image_t1)
         
         total_loss, loss_dict = self.compute_losses(
             predicted_composed_action, 
             at1_6dof_gt,  # Main task: predict at1_6dof
-            reconstructed_channels_t1,
-            original_channels_t1,
             a_prime_t2_hat,
             at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
@@ -236,10 +220,22 @@ class CardiacDreamerSystem(pl.LightningModule):
         self.log("train_main_task_loss_step", loss_dict["main_task_loss"], prog_bar=True, on_step=True, on_epoch=False)
 
         # Epoch-level logging (x: epoch) - used for clear epoch trends
-        self.log("train_total_loss_epoch", total_loss, step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("train_main_task_loss_epoch", loss_dict["main_task_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("train_aux_t2_loss", loss_dict["aux_t2_action_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("train_aux_latent_loss", loss_dict["aux_latent_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
+        # Check if trainer is available (not available during standalone testing)
+        try:
+            if self.trainer is not None:
+                self.log("train_total_loss_epoch", total_loss, on_step=False, on_epoch=True)
+                self.log("train_main_task_loss_epoch", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
+                self.log("train_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+            else:
+                # Standalone testing - use simple logging without step parameter
+                self.log("train_total_loss_epoch", total_loss, on_step=False, on_epoch=True)
+                self.log("train_main_task_loss_epoch", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
+                self.log("train_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        except (RuntimeError, AttributeError):
+            # Fallback for standalone testing
+            self.log("train_total_loss_epoch", total_loss, on_step=False, on_epoch=True)
+            self.log("train_main_task_loss_epoch", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
+            self.log("train_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
         return total_loss
     
     def validation_step(self, batch: Tuple[torch.Tensor, ...], batch_idx: int) -> torch.Tensor:
@@ -247,25 +243,32 @@ class CardiacDreamerSystem(pl.LightningModule):
         system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
         predicted_composed_action = system_outputs["predicted_action_composed"]
-        reconstructed_channels_t1 = system_outputs["reconstructed_channels_t1"]
         a_prime_t2_hat = system_outputs["a_prime_t2_hat"]
-        
-        original_channels_t1 = self._get_original_channels_t1(image_t1)
             
         total_loss, loss_dict = self.compute_losses(
             predicted_composed_action, 
             at1_6dof_gt,  # Main task: predict at1_6dof
-            reconstructed_channels_t1,
-            original_channels_t1,
             a_prime_t2_hat,
             at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
         # Validation logging (x: epoch) - validation is epoch-level
-        self.log("val_total_loss", total_loss, step=self.current_epoch, prog_bar=True, on_step=False, on_epoch=True)
-        self.log("val_main_task_loss", loss_dict["main_task_loss"], step=self.current_epoch, prog_bar=True, on_step=False, on_epoch=True)
-        self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("val_aux_latent_loss", loss_dict["aux_latent_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
+        # Check if trainer is available (not available during standalone testing)
+        try:
+            if self.trainer is not None:
+                self.log("val_total_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+                self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)
+                self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+            else:
+                # Standalone testing - use simple logging without step parameter
+                self.log("val_total_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+                self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)
+                self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        except (RuntimeError, AttributeError):
+            # Fallback for standalone testing
+            self.log("val_total_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+            self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)
+            self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
         # Collect predictions and ground truth for scatter plots
         self.validation_step_outputs.append({
             "predicted_action_composed": predicted_composed_action.detach().cpu(),
@@ -279,16 +282,11 @@ class CardiacDreamerSystem(pl.LightningModule):
         system_outputs = self(image_t1, a_hat_t1_to_t2_gt)
         
         predicted_composed_action = system_outputs["predicted_action_composed"]
-        reconstructed_channels_t1 = system_outputs["reconstructed_channels_t1"]
         a_prime_t2_hat = system_outputs["a_prime_t2_hat"]
-        
-        original_channels_t1 = self._get_original_channels_t1(image_t1)
             
         total_loss, loss_dict = self.compute_losses(
             predicted_composed_action, 
             at1_6dof_gt,  # Main task: predict at1_6dof
-            reconstructed_channels_t1,
-            original_channels_t1,
             a_prime_t2_hat,
             at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
@@ -297,11 +295,25 @@ class CardiacDreamerSystem(pl.LightningModule):
         mse_main_task = F.mse_loss(predicted_composed_action, at1_6dof_gt)
         
         # Test logging (橫軸: epoch)
-        self.log("test_total_loss", total_loss, step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("test_main_task_loss", loss_dict["main_task_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("test_main_task_mse", mse_main_task, step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("test_aux_latent_loss", loss_dict["aux_latent_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
+        # Check if trainer is available (not available during standalone testing)
+        try:
+            if self.trainer is not None:
+                self.log("test_total_loss", total_loss, on_step=False, on_epoch=True)
+                self.log("test_main_task_loss", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
+                self.log("test_main_task_mse", mse_main_task, on_step=False, on_epoch=True)
+                self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+            else:
+                # Standalone testing - use simple logging without step parameter
+                self.log("test_total_loss", total_loss, on_step=False, on_epoch=True)
+                self.log("test_main_task_loss", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
+                self.log("test_main_task_mse", mse_main_task, on_step=False, on_epoch=True)
+                self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        except (RuntimeError, AttributeError):
+            # Fallback for standalone testing
+            self.log("test_total_loss", total_loss, on_step=False, on_epoch=True)
+            self.log("test_main_task_loss", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
+            self.log("test_main_task_mse", mse_main_task, on_step=False, on_epoch=True)
+            self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
         self.test_step_outputs.append({
             "test_total_loss": total_loss,
             "test_main_task_mse": mse_main_task,
@@ -329,12 +341,25 @@ class CardiacDreamerSystem(pl.LightningModule):
         all_targets_composed_gt = torch.cat([out["target_action_composed_gt"] for out in self.test_step_outputs])
         
         overall_mse_main_task = F.mse_loss(all_preds_composed, all_targets_composed_gt)
-        self.log("test_final_main_task_mse", overall_mse_main_task, step=self.current_epoch)
+        # Check if trainer is available (not available during standalone testing)
+        try:
+            if self.trainer is not None:
+                self.log("test_final_main_task_mse", overall_mse_main_task)
+            else:
+                self.log("test_final_main_task_mse", overall_mse_main_task)
+        except (RuntimeError, AttributeError):
+            self.log("test_final_main_task_mse", overall_mse_main_task)
 
         per_dim_mse_main_task = torch.mean((all_preds_composed - all_targets_composed_gt) ** 2, dim=0)
         dim_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw"]
         for i, dim_mse in enumerate(per_dim_mse_main_task):
-            self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse, step=self.current_epoch)
+            try:
+                if self.trainer is not None:
+                    self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
+                else:
+                    self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
+            except (RuntimeError, AttributeError):
+                self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
         # Clear the outputs for next test epoch
         self.test_step_outputs.clear()
 
@@ -459,7 +484,6 @@ def get_cardiac_dreamer_system(
     feature_dim: int = 49, 
     lr: float = 1e-4,
     weight_decay: float = 1e-5,
-    lambda_latent: float = 0.2,
     lambda_t2_action: float = 1.0,
     smooth_l1_beta: float = 1.0, # Added beta here
     use_flash_attn: bool = True,
@@ -475,7 +499,6 @@ def get_cardiac_dreamer_system(
         feature_dim=feature_dim,
         lr=lr,
         weight_decay=weight_decay,
-        lambda_latent=lambda_latent,
         lambda_t2_action=lambda_t2_action,
         smooth_l1_beta=smooth_l1_beta, # Pass beta
         use_flash_attn=use_flash_attn,
@@ -495,7 +518,6 @@ if __name__ == "__main__":
     NUM_LAYERS = 6
     FEATURE_DIM = 49
     LR = 1e-4
-    LAMBDA_LATENT = 0.2
     LAMBDA_T2_ACTION = 1.0
     SMOOTH_L1_BETA = 1.0
     USE_FLASH_ATTN = False
@@ -509,7 +531,6 @@ if __name__ == "__main__":
         num_layers=NUM_LAYERS,
         feature_dim=FEATURE_DIM,
         lr=LR,
-        lambda_latent=LAMBDA_LATENT,
         lambda_t2_action=LAMBDA_T2_ACTION,
         smooth_l1_beta=SMOOTH_L1_BETA,
         use_flash_attn=USE_FLASH_ATTN,
@@ -535,30 +556,24 @@ if __name__ == "__main__":
     with torch.no_grad():
         system_outputs = system(image_t1, a_hat_t1_to_t2_gt)
         predicted_action_composed = system_outputs["predicted_action_composed"]
-        reconstructed_channels_t1 = system_outputs["reconstructed_channels_t1"]
         a_prime_t2_hat = system_outputs["a_prime_t2_hat"]
         
         print(f"\nSystem output shapes:")
         print(f"  Predicted composed action (a_t1_prime_composed): {predicted_action_composed.shape}")
-        print(f"  Reconstructed channels (t1): {reconstructed_channels_t1.shape}")
         print(f"  Predicted action at t2 (a_prime_t2_hat): {a_prime_t2_hat.shape}")
 
-    original_channels_t1 = system._get_original_channels_t1(image_t1)
-    total_loss, loss_dict = system.compute_losses(
-        predicted_action_composed,
-        at1_6dof_gt, 
-        reconstructed_channels_t1,
-        original_channels_t1,
-        a_prime_t2_hat,
-        at2_6dof_gt 
-    )
-    
-    print(f"\nLoss values:")
-    print(f"  Total loss: {total_loss.item():.4f}")
-    print(f"  Main Task Loss: {loss_dict['main_task_loss'].item():.4f}")
-    print(f"  Aux T2 Action Loss: {loss_dict['aux_t2_action_loss'].item():.4f}")
-    print(f"  Aux Latent Loss: {loss_dict['aux_latent_loss'].item():.4f}")
+        total_loss, loss_dict = system.compute_losses(
+            predicted_action_composed,
+            at1_6dof_gt, 
+            a_prime_t2_hat,
+            at2_6dof_gt 
+        )
         
+        print(f"\nLoss values:")
+        print(f"  Total loss: {total_loss.item():.4f}")
+        print(f"  Main Task Loss: {loss_dict['main_task_loss'].item():.4f}")
+        print(f"  Aux T2 Action Loss: {loss_dict['aux_t2_action_loss'].item():.4f}")
+
     print("\nTesting training_step...")
     system.train()
     optimizer = system.configure_optimizers()["optimizer"]

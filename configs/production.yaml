@@ -12,11 +12,10 @@ model:
   use_pretrained: true            # Use ImageNet pretrained ResNet34
   
   # Optimization parameters - WITH DATA NORMALIZATION
-  lr: 3.0e-5                      # Moderate learning rate with normalized data
-  weight_decay: 1.0e-4            # Balanced weight decay
+  lr: 1e-4                        # Moderate learning rate with normalized data
+  weight_decay: 1e-5              # Balanced weight decay
   
   # Loss function parameters - NORMALIZED DATA VERSION
-  lambda_latent: 0.0              # Set to 0 - latent loss not used in total loss (monitoring only)
   lambda_t2_action: 1.0           # Set to 1.0 - paper uses equal weighting for at1 and at2
   smooth_l1_beta: 1.0             # Standard beta with normalized data
   primary_task_only: false        # Keep false to use both at1 and at2 losses
@@ -27,18 +26,18 @@ model:
 
 training:
   # Data loading parameters
-  batch_size: 8                   # Reasonable batch size
-  num_workers: 2                  # Adjust based on CPU cores
+  batch_size: 16                   # Reasonable batch size
+  num_workers: 4                  # Adjust based on CPU cores
   
   # Training schedule
   max_epochs: 150                 # Sufficient epochs for convergence
-  early_stop_patience: 30         # Reasonable patience
+  early_stop_patience: 20         # Reasonable patience
   check_val_every_n_epoch: 1      # Validation frequency
   
   # Optimization settings - NORMALIZED DATA
   gradient_clip_val: 1.0          # Standard gradient clipping
-  accumulate_grad_batches: 4      # Maintain effective batch size
-  log_every_n_steps: 10           # Logging frequency
+  accumulate_grad_batches: 1      # Maintain effective batch size
+  log_every_n_steps: 20           # Logging frequency
   
   # Hardware settings
   accelerator: "auto"             # Hardware accelerator (auto/gpu/cpu)
@@ -62,8 +61,8 @@ data:
 experiment:
   # Weights & Biases (optional)
   use_wandb: true                     # start WandB
-  wandb_project: "cardiac_dreamer"    # project name
-  wandb_entity: "yuntang-national-cheng-kung-university-co-op"  # wandb username
+  wandb_project: "cardiac-dreamer"    # project name
+  wandb_entity: null  # Set to your WandB username if needed
   
   # Tags for experiment organization
   tags:
