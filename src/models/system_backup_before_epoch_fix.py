@@ -231,15 +231,12 @@ class CardiacDreamerSystem(pl.LightningModule):
             at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
-        # Step-level logging (x: global_step) - used for debugging
-        self.log("train_total_loss_step", total_loss, prog_bar=True, on_step=True, on_epoch=False)
-        self.log("train_main_task_loss_step", loss_dict["main_task_loss"], prog_bar=True, on_step=True, on_epoch=False)
-
-        # Epoch-level logging (x: epoch) - used for clear epoch trends
-        self.log("train_total_loss_epoch", total_loss, step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("train_main_task_loss_epoch", loss_dict["main_task_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("train_aux_t2_loss", loss_dict["aux_t2_action_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("train_aux_latent_loss", loss_dict["aux_latent_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
+        # Simplified logging - only essential metrics
+        self.log("train_total_loss", total_loss, prog_bar=True, on_step=True, on_epoch=True)
+        self.log("train_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=True, on_epoch=True)
+        self.log("train_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        self.log("train_aux_latent_loss", loss_dict["aux_latent_loss"], on_step=False, on_epoch=True)
+        
         return total_loss
     
     def validation_step(self, batch: Tuple[torch.Tensor, ...], batch_idx: int) -> torch.Tensor:
@@ -261,11 +258,12 @@ class CardiacDreamerSystem(pl.LightningModule):
             at2_6dof_gt   # Auxiliary task: predict at2_6dof
         )
         
-        # Validation logging (x: epoch) - validation is epoch-level
-        self.log("val_total_loss", total_loss, step=self.current_epoch, prog_bar=True, on_step=False, on_epoch=True)
-        self.log("val_main_task_loss", loss_dict["main_task_loss"], step=self.current_epoch, prog_bar=True, on_step=False, on_epoch=True)
-        self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("val_aux_latent_loss", loss_dict["aux_latent_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
+        # Simplified logging - only essential metrics
+        self.log("val_total_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        self.log("val_aux_latent_loss", loss_dict["aux_latent_loss"], on_step=False, on_epoch=True)
+        
         # Collect predictions and ground truth for scatter plots
         self.validation_step_outputs.append({
             "predicted_action_composed": predicted_composed_action.detach().cpu(),
@@ -296,12 +294,13 @@ class CardiacDreamerSystem(pl.LightningModule):
         # For reporting, calculate MSE of the primary composed action prediction
         mse_main_task = F.mse_loss(predicted_composed_action, at1_6dof_gt)
         
-        # Test logging (橫軸: epoch)
-        self.log("test_total_loss", total_loss, step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("test_main_task_loss", loss_dict["main_task_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("test_main_task_mse", mse_main_task, step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
-        self.log("test_aux_latent_loss", loss_dict["aux_latent_loss"], step=self.current_epoch, on_step=False, on_epoch=True)
+        # Simplified logging - only essential metrics
+        self.log("test_total_loss", total_loss, on_step=False, on_epoch=True)
+        self.log("test_main_task_loss", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
+        self.log("test_main_task_mse", mse_main_task, on_step=False, on_epoch=True)
+        self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
+        self.log("test_aux_latent_loss", loss_dict["aux_latent_loss"], on_step=False, on_epoch=True)
+        
         self.test_step_outputs.append({
             "test_total_loss": total_loss,
             "test_main_task_mse": mse_main_task,
@@ -329,12 +328,13 @@ class CardiacDreamerSystem(pl.LightningModule):
         all_targets_composed_gt = torch.cat([out["target_action_composed_gt"] for out in self.test_step_outputs])
         
         overall_mse_main_task = F.mse_loss(all_preds_composed, all_targets_composed_gt)
-        self.log("test_final_main_task_mse", overall_mse_main_task, step=self.current_epoch)
-
+        self.log("test_final_main_task_mse", overall_mse_main_task)
+        
         per_dim_mse_main_task = torch.mean((all_preds_composed - all_targets_composed_gt) ** 2, dim=0)
         dim_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw"]
         for i, dim_mse in enumerate(per_dim_mse_main_task):
-            self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse, step=self.current_epoch)
+            self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
+
         # Clear the outputs for next test epoch
         self.test_step_outputs.clear()
 

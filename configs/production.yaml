@@ -12,7 +12,7 @@ model:
   use_pretrained: true            # Use ImageNet pretrained ResNet34
   
   # Optimization parameters - WITH DATA NORMALIZATION
-  lr: 5.0e-4                    # Moderate learning rate with normalized data
+  lr: 3.0e-5                      # Moderate learning rate with normalized data
   weight_decay: 1.0e-4            # Balanced weight decay
   
   # Loss function parameters - NORMALIZED DATA VERSION
