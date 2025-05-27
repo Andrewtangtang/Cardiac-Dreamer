@@ -40,7 +40,7 @@ training:
   
   # Hardware settings
   accelerator: "auto"             # Hardware accelerator
-  precision: 16                   # MIXED PRECISION to save memory
+  precision: 32                  # MIXED PRECISION to save memory
   
 # Data configuration
 data:

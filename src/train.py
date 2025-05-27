@@ -967,18 +967,30 @@ class TrainingVisualizer:
             axes[0, 2].set_yscale('log')  # Use log scale for learning rate
         
         # Auxiliary t2 action loss (epoch-based)
-        aux_t2_loss = df[df['train_aux_t2_loss_epoch'].notna()]
-        val_aux_t2_loss = df[df['val_aux_t2_loss'].notna()]
-        
-        if not aux_t2_loss.empty:
-            axes[1, 0].plot(aux_t2_loss['epoch'], aux_t2_loss['train_aux_t2_loss_epoch'], label='Train', color='#FECA57', linewidth=2)
-            if not val_aux_t2_loss.empty:
-                axes[1, 0].plot(val_aux_t2_loss['epoch'], val_aux_t2_loss['val_aux_t2_loss'], label='Validation', color='#FFD93D', linewidth=2)
-            axes[1, 0].set_xlabel('Epoch')
-            axes[1, 0].set_ylabel('Auxiliary T2 Loss')
+        try:
+            aux_t2_loss = df[df['train_aux_t2_loss'].notna()]
+            val_aux_t2_loss = df[df['val_aux_t2_loss'].notna()]
+            
+            if not aux_t2_loss.empty:
+                axes[1, 0].plot(aux_t2_loss['epoch'], aux_t2_loss['train_aux_t2_loss'], label='Train', color='#FECA57', linewidth=2)
+                if not val_aux_t2_loss.empty:
+                    axes[1, 0].plot(val_aux_t2_loss['epoch'], val_aux_t2_loss['val_aux_t2_loss'], label='Validation', color='#FFD93D', linewidth=2)
+                axes[1, 0].set_xlabel('Epoch')
+                axes[1, 0].set_ylabel('Auxiliary T2 Loss')
+                axes[1, 0].set_title('T2 Action Prediction Loss (Auxiliary)')
+                axes[1, 0].legend()
+                axes[1, 0].grid(True, alpha=0.3)
+            else:
+                # 如果沒有輔助損失數據，顯示提示信息
+                axes[1, 0].text(0.5, 0.5, 'No auxiliary T2 loss data available', 
+                               ha='center', va='center', transform=axes[1, 0].transAxes)
+                axes[1, 0].set_title('T2 Action Prediction Loss (Auxiliary)')
+                
+        except KeyError as e:
+            print(f"⚠️ Warning: Column {e} not found in training logs")
+            axes[1, 0].text(0.5, 0.5, f'Auxiliary loss data not available\n(Column {e} missing)', 
+                           ha='center', va='center', transform=axes[1, 0].transAxes)
             axes[1, 0].set_title('T2 Action Prediction Loss (Auxiliary)')
-            axes[1, 0].legend()
-            axes[1, 0].grid(True, alpha=0.3)
         
         # Final metrics summary
         if not val_loss.empty:
@@ -994,8 +1006,7 @@ Main Task Loss: {final_metrics.get('val_main_task_loss', 'N/A'):.4f if isinstanc
 Training completed successfully.
 Focus on Main Task Loss for performance.
 
-📊 Validation scatter plots are generated
-   every epoch in logs/validation_scatter_plots/"""
+📊 Final validation plots generated at training end"""
             
             axes[1, 1].text(0.1, 0.5, metrics_text, fontsize=11, 
                            verticalalignment='center', fontfamily='monospace')
