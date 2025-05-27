@@ -35,187 +35,6 @@ if project_root not in sys.path:
 from src.models.system import get_cardiac_dreamer_system
 
 
-class SampleWiseCrossPatientDataset(Dataset):
-    """
-    Cross-patient dataset that splits by sample ratio (70%/15%/15%) rather than by patient
-    WARNING: This may cause data leakage as samples from the same patient may appear in both train and test sets
-    
-    Args:
-        data_dir: Root data directory path (e.g., "data/processed")
-        transform: Image transformations
-        split: Data split ("train", "val", "test")
-        train_ratio: Training set ratio (default: 0.7)
-        val_ratio: Validation set ratio (default: 0.15)
-        test_ratio: Test set ratio (default: 0.15)
-        random_seed: Random seed for reproducible splits
-        small_subset: Whether to use only a small subset of data (for testing)
-    """
-    def __init__(
-        self, 
-        data_dir: str, 
-        transform=None, 
-        split: str = "train",
-        train_ratio: float = 0.7,
-        val_ratio: float = 0.15,
-        test_ratio: float = 0.15,
-        random_seed: int = 42,
-        small_subset: bool = False
-    ):
-        self.data_dir = data_dir
-        self.transform = transform
-        self.split = split
-        self.small_subset = small_subset
-        
-        # Validate ratios
-        if abs((train_ratio + val_ratio + test_ratio) - 1.0) > 1e-6:
-            raise ValueError(f"Ratios must sum to 1.0, got {train_ratio + val_ratio + test_ratio}")
-        
-        print(f"⚠️  WARNING: Sample-wise splitting may cause data leakage!")
-        print(f"   Same patient data may appear in both train and test sets.")
-        print(f"   Consider using CrossPatientTransitionsDataset for medical AI best practices.")
-        
-        # Load ALL transitions from ALL patients first
-        print(f"Loading all transitions from {data_dir}...")
-        self.all_transitions = []
-        self.patient_counts = {}
-        
-        # Find all patient directories
-        patient_dirs = []
-        for item in os.listdir(data_dir):
-            patient_path = os.path.join(data_dir, item)
-            if os.path.isdir(patient_path) and item.startswith("data_"):
-                json_file = os.path.join(patient_path, "transitions_dataset.json")
-                if os.path.exists(json_file):
-                    patient_dirs.append(item)
-        
-        print(f"Found {len(patient_dirs)} patient directories: {patient_dirs}")
-        
-        # Load transitions from all patients
-        for patient_id in patient_dirs:
-            patient_dir = os.path.join(data_dir, patient_id)
-            json_file = os.path.join(patient_dir, "transitions_dataset.json")
-            
-            try:
-                with open(json_file, 'r') as f:
-                    patient_transitions = json.load(f)
-                
-                # Add patient_id and full paths to each transition
-                for transition in patient_transitions:
-                    # Convert relative paths to absolute paths
-                    ft1_path = os.path.join(patient_dir, transition["ft1_image_path"])
-                    ft2_path = os.path.join(patient_dir, transition["ft2_image_path"])
-                    
-                    # Verify files exist
-                    if not os.path.exists(ft1_path):
-                        print(f"Warning: Image file not found: {ft1_path}")
-                        continue
-                        
-                    # Create complete transition record
-                    complete_transition = {
-                        "patient_id": patient_id,
-                        "ft1_image_path": ft1_path,
-                        "ft2_image_path": ft2_path,
-                        "at1_6dof": transition["at1_6dof"],
-                        "action_change_6dof": transition["action_change_6dof"], 
-                        "at2_6dof": transition["at2_6dof"]
-                    }
-                    
-                    self.all_transitions.append(complete_transition)
-                
-                self.patient_counts[patient_id] = len(patient_transitions)
-                print(f"Loaded {len(patient_transitions)} transitions from patient {patient_id}")
-                
-            except Exception as e:
-                print(f"Error loading {json_file}: {e}")
-        
-        total_samples = len(self.all_transitions)
-        print(f"Total loaded transitions: {total_samples}")
-        print(f"Patient distribution: {self.patient_counts}")
-        
-        # Shuffle all transitions for random splitting
-        random.seed(random_seed)
-        random.shuffle(self.all_transitions)
-        
-        # Calculate split indices
-        num_train = int(train_ratio * total_samples)
-        num_val = int(val_ratio * total_samples)
-        num_test = total_samples - num_train - num_val  # Ensure all samples are used
-        
-        print(f"Sample split calculation:")
-        print(f"  Train: {num_train} samples ({num_train/total_samples:.1%})")
-        print(f"  Val: {num_val} samples ({num_val/total_samples:.1%})")
-        print(f"  Test: {num_test} samples ({num_test/total_samples:.1%})")
-        
-        # Split transitions by sample indices
-        if split == "train":
-            self.transitions = self.all_transitions[:num_train]
-        elif split == "val":
-            self.transitions = self.all_transitions[num_train:num_train + num_val]
-        elif split == "test":
-            self.transitions = self.all_transitions[num_train + num_val:]
-        else:
-            raise ValueError(f"Invalid split: {split}. Must be 'train', 'val', or 'test'")
-        
-        # For small subset testing, limit samples
-        if small_subset:
-            num_samples = min(10, len(self.transitions))
-            self.transitions = self.transitions[:num_samples]
-            print(f"Using small subset for testing: {num_samples} samples")
-        
-        print(f"Final {split} set: {len(self.transitions)} samples")
-        
-        # Show patient distribution in this split
-        split_patient_counts = {}
-        for transition in self.transitions:
-            patient_id = transition["patient_id"]
-            split_patient_counts[patient_id] = split_patient_counts.get(patient_id, 0) + 1
-        
-        print(f"{split.capitalize()} set patient distribution: {split_patient_counts}")
-    
-    def __len__(self) -> int:
-        return len(self.transitions)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Get a single transition sample
-        
-        Returns:
-            image_t1: Input image at time t1 [C, H, W]
-            a_hat_t1_to_t2_gt: Ground truth relative action from t1 to t2 [6]
-            at1_6dof_gt: Ground truth action at t1 [6] (main task target)
-            at2_6dof_gt: Ground truth action at t2 [6] (auxiliary task target)
-        """
-        # Get transition data
-        transition = self.transitions[idx]
-        
-        # Load image at t1
-        image_t1 = Image.open(transition["ft1_image_path"]).convert("L")  # Convert to grayscale
-        
-        # Apply transformations
-        if self.transform:
-            image_t1 = self.transform(image_t1)
-        
-        # Extract actions from transition
-        at1_6dof = np.array(transition["at1_6dof"], dtype=np.float32)
-        action_change_6dof = np.array(transition["action_change_6dof"], dtype=np.float32) 
-        at2_6dof = np.array(transition["at2_6dof"], dtype=np.float32)
-        
-        # Convert to tensors
-        a_hat_t1_to_t2_gt = torch.tensor(action_change_6dof, dtype=torch.float32)
-        at1_6dof_gt = torch.tensor(at1_6dof, dtype=torch.float32)
-        at2_6dof_gt = torch.tensor(at2_6dof, dtype=torch.float32)
-        
-        return image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt
-    
-    def get_patient_stats(self) -> Dict[str, int]:
-        """Get statistics about patients in this split"""
-        patient_counts = {}
-        for transition in self.transitions:
-            patient_id = transition["patient_id"]
-            patient_counts[patient_id] = patient_counts.get(patient_id, 0) + 1
-        return patient_counts
-
-
 class CrossPatientTransitionsDataset(Dataset):
     """
     Cross-patient dataset for ultrasound image transitions with actions
@@ -346,8 +165,11 @@ class CrossPatientTransitionsDataset(Dataset):
         at2_actions = np.array(at2_actions)
         action_changes = np.array(action_changes)
         
-        # Compute statistics for all actions combined
-        all_actions = np.vstack([at1_actions, at2_actions])
+        # 🎯 統一處理所有動作向量：將三種類型的動作向量合併
+        # 這樣可以確保所有動作向量使用相同的統計量進行正規化
+        all_actions = np.vstack([at1_actions, at2_actions, action_changes])
+        
+        # 對每個維度分別計算統計量
         self.action_mean = np.mean(all_actions, axis=0)
         self.action_std = np.std(all_actions, axis=0)
         
@@ -355,14 +177,26 @@ class CrossPatientTransitionsDataset(Dataset):
         self.action_std = np.where(self.action_std < 1e-6, 1.0, self.action_std)
         
         print(f"Action statistics computed from {len(self.transitions)} transitions:")
-        print(f"  AT1/AT2 range: {all_actions.min():.3f} to {all_actions.max():.3f}")
-        print(f"  Mean: {self.action_mean}")
-        print(f"  Std: {self.action_std}")
+        print(f"  Total action vectors: {all_actions.shape[0]} (AT1: {at1_actions.shape[0]}, AT2: {at2_actions.shape[0]}, Changes: {action_changes.shape[0]})")
+        print(f"  Combined range: {all_actions.min():.3f} to {all_actions.max():.3f}")
+        print(f"  Mean per dimension: {self.action_mean}")
+        print(f"  Std per dimension: {self.action_std}")
+        
+        # 顯示各維度的詳細統計
+        dimension_names = ['X (mm)', 'Y (mm)', 'Z (mm)', 'Roll (rad)', 'Pitch (rad)', 'Yaw (rad)']
+        print(f"\n📊 Detailed statistics per dimension:")
+        for i, name in enumerate(dimension_names):
+            print(f"  {name}: mean={self.action_mean[i]:.4f}, std={self.action_std[i]:.4f}, range=[{all_actions[:, i].min():.3f}, {all_actions[:, i].max():.3f}]")
         
         # Save normalization stats for use in val/test
         norm_stats = {
             "action_mean": self.action_mean.tolist(),
-            "action_std": self.action_std.tolist()
+            "action_std": self.action_std.tolist(),
+            "dimension_names": dimension_names,
+            "total_samples": int(all_actions.shape[0]),
+            "at1_samples": int(at1_actions.shape[0]),
+            "at2_samples": int(at2_actions.shape[0]),
+            "change_samples": int(action_changes.shape[0])
         }
         
         norm_file = os.path.join(self.data_dir, "normalization_stats.json")
@@ -447,7 +281,7 @@ class CrossPatientTransitionsDataset(Dataset):
         if self.normalize_actions:
             at1_6dof = self.normalize_action(at1_6dof)
             at2_6dof = self.normalize_action(at2_6dof)
-            # Note: action_change might need different normalization, keeping original for now
+            action_change_6dof = self.normalize_action(action_change_6dof)
         
         # Convert to tensors
         a_hat_t1_to_t2_gt = torch.tensor(action_change_6dof, dtype=torch.float32)
@@ -628,83 +462,6 @@ def _smart_patient_split(patient_dirs: List[str], patient_sample_counts: Dict[st
     return train_patients, val_patients, test_patients
 
 
-# Keep the old dataset for backward compatibility
-class UltrasoundTransitionsDataset(Dataset):
-    """
-    Legacy dataset for ultrasound image transitions with actions
-    Reads from CSV files (deprecated, use CrossPatientTransitionsDataset instead)
-    """
-    def __init__(
-        self, 
-        data_dir: str, 
-        transform=None, 
-        split: str = "train",
-        small_subset: bool = False
-    ):
-        print("Warning: UltrasoundTransitionsDataset is deprecated. Use CrossPatientTransitionsDataset instead.")
-        self.data_dir = data_dir
-        self.transform = transform
-        self.split = split
-        self.small_subset = small_subset
-        
-        # Load transitions CSV (contains all the data we need)
-        csv_file = os.path.join(data_dir, f"{split}_transitions.csv")
-        
-        # Check if file exists
-        if not os.path.exists(csv_file):
-            raise FileNotFoundError(f"CSV file not found: {csv_file}")
-            
-        # Load transitions DataFrame
-        self.transitions_df = pd.read_csv(csv_file)
-        
-        # Store column names for easier access
-        self.current_pose_cols = ["at1_X_mm", "at1_Y_mm", "at1_Z_mm", "at1_Roll_deg", "at1_Pitch_deg", "at1_Yaw_deg"]
-        self.target_change_cols = ["change_X_mm", "change_Y_mm", "change_Z_mm", "change_Roll_deg", "change_Pitch_deg", "change_Yaw_deg"]
-        
-        # Get paths to image folders
-        self.images_t1_dir = os.path.join(data_dir, "images_ft1")
-        self.images_t2_dir = os.path.join(data_dir, "images_ft2")
-        
-        # Image root check
-        if not os.path.exists(self.images_t1_dir) or not os.path.exists(self.images_t2_dir):
-            raise FileNotFoundError(f"Image directories not found: {self.images_t1_dir} or {self.images_t2_dir}")
-            
-        # For small subset testing, limit samples
-        if small_subset:
-            num_samples = min(10, len(self.transitions_df))
-            self.transitions_df = self.transitions_df.iloc[:num_samples]
-            print(f"Using small subset for testing: {num_samples} samples")
-            
-        print(f"Loaded {len(self.transitions_df)} {split} transitions from {data_dir}")
-    
-    def __len__(self) -> int:
-        return len(self.transitions_df)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Get transition data from DataFrame
-        transition_row = self.transitions_df.iloc[idx]
-        
-        # Get image paths from row
-        img_t1_path = os.path.join(self.data_dir, transition_row["ft1_image_path"])
-        
-        # Load current image (t1)
-        image = Image.open(img_t1_path).convert("L")  # Convert to grayscale
-        
-        # Apply transformations
-        if self.transform:
-            image = self.transform(image)
-        
-        # Current action (x, y, z, roll, pitch, yaw)
-        current_action = transition_row[self.current_pose_cols].values.astype(np.float32)
-        
-        # Target action change (the desired action to move from t1 to t2)
-        target_action = transition_row[self.target_change_cols].values.astype(np.float32)
-        
-        # Convert to tensors
-        current_action = torch.tensor(current_action, dtype=torch.float32)
-        target_action = torch.tensor(target_action, dtype=torch.float32)
-        
-        return image, current_action, target_action
 
 
 def load_config(config_path: str) -> Dict:
@@ -996,11 +753,26 @@ class TrainingVisualizer:
         if not val_loss.empty:
             final_metrics = val_loss.iloc[-1]
             
-            metrics_text = f"""Final Metrics (Epoch {int(final_metrics.get('epoch', 0))}):
+            # Format metrics safely
+            epoch_num = int(final_metrics.get('epoch', 0))
+            
+            total_loss_val = final_metrics.get('val_total_loss', 'N/A')
+            if isinstance(total_loss_val, (int, float)):
+                total_loss_str = f"{total_loss_val:.4f}"
+            else:
+                total_loss_str = str(total_loss_val)
+            
+            main_task_loss_val = final_metrics.get('val_main_task_loss', 'N/A')
+            if isinstance(main_task_loss_val, (int, float)):
+                main_task_loss_str = f"{main_task_loss_val:.4f}"
+            else:
+                main_task_loss_str = str(main_task_loss_val)
+            
+            metrics_text = f"""Final Metrics (Epoch {epoch_num}):
 
-Total Loss: {final_metrics.get('val_total_loss', 'N/A'):.4f if isinstance(final_metrics.get('val_total_loss', 'N/A'), (int, float)) else final_metrics.get('val_total_loss', 'N/A')}
+Total Loss: {total_loss_str}
 
-Main Task Loss: {final_metrics.get('val_main_task_loss', 'N/A'):.4f if isinstance(final_metrics.get('val_main_task_loss', 'N/A'), (int, float)) else final_metrics.get('val_main_task_loss', 'N/A')}
+Main Task Loss: {main_task_loss_str}
 (This is the key metric for AT1 prediction)
 
 Training completed successfully.
