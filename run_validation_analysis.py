@@ -47,7 +47,7 @@ def find_best_checkpoint(run_dir: str):
 
 def main():
     # 預設的運行目錄
-    default_run_dir = "outputs_safe/run_20250527_044827"
+    default_run_dir = "outputs_channel_token/run_20250528_041012"
     
     if len(sys.argv) > 1:
         run_dir = sys.argv[1]

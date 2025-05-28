@@ -26,8 +26,8 @@ model:
 
 training:
   # Data loading parameters
-  batch_size: 16                   # Reasonable batch size
-  num_workers: 4                  # Adjust based on CPU cores
+  batch_size: 4                   # Reasonable batch size
+  num_workers: 2                  # Adjust based on CPU cores
   
   # Training schedule
   max_epochs: 150                 # Sufficient epochs for convergence

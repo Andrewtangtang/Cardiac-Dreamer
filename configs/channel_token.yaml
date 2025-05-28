@@ -1,0 +1,74 @@
+# Safe Training Configuration - Prevents System Crashes
+# Reduced resource usage for stable training
+
+model:
+  # Model architecture parameters
+  token_type: "channel"             # Using channel tokens (more efficient)
+  d_model: 512                    # REDUCED from 768 to save memory
+  num_heads: 8                    # REDUCED from 12 to save memory
+  num_layers: 4                   # REDUCED from 6 to save memory
+  feature_dim: 49                 # Spatial feature dimension (7x7=49)
+  in_channels: 1                  # Input image channels (grayscale)
+  use_pretrained: true            # Use ImageNet pretrained ResNet34
+  
+  # Optimization parameters
+  lr: 5e-5                        # REDUCED learning rate for stability
+  weight_decay: 1e-5              # Balanced weight decay
+  
+  # Loss function parameters
+  lambda_t2_action: 1.0           # Equal weighting for at1 and at2
+  smooth_l1_beta: 1.0             # Standard beta
+  primary_task_only: false        # Use both at1 and at2 losses
+  
+  # Advanced settings
+  use_flash_attn: false           # Disable flash attention for stability
+
+training:
+  # Data loading parameters - REDUCED FOR SAFETY
+  batch_size: 16                   # VERY SMALL batch size to prevent OOM
+  num_workers: 2                  # REDUCED workers to save CPU/RAM
+  
+  # Training schedule
+  max_epochs: 50                  # Reduced epochs for testing
+  early_stop_patience: 10         # Reduced patience
+  check_val_every_n_epoch: 2      # Less frequent validation
+  
+  # Optimization settings
+  gradient_clip_val: 0.5          # REDUCED gradient clipping
+  accumulate_grad_batches: 4      # ACCUMULATE gradients to simulate larger batch
+  log_every_n_steps: 50           # Less frequent logging
+  
+  # Hardware settings
+  accelerator: "auto"             # Hardware accelerator
+  precision: 32                  # MIXED PRECISION to save memory
+  
+# Data configuration
+data:
+  # Use only data_0513_01 since it's the only one with images
+  train_ratio: 0.7                # 70% for training
+  val_ratio: 0.15                 # 15% for validation  
+  test_ratio: 0.15                # 15% for testing
+  
+  # Data augmentation - DISABLED for stability
+  augmentation:
+    enabled: false                # DISABLE augmentation to save memory
+    rotation_range: 0             # No augmentation
+    brightness_range: 0           # No augmentation
+    contrast_range: 0             # No augmentation
+
+# Experiment tracking
+experiment:
+  # Weights & Biases
+  use_wandb: true                 # Keep WandB for monitoring
+  wandb_project: "cardiac-dreamer-safe"
+  wandb_entity: null
+  
+  # Tags for experiment organization
+  tags:
+    - "safe_training"             # Safe configuration
+    - "channel_tokens"            # Using channel tokens
+    - "reduced_resources"         # Reduced resource usage
+    - "crash_prevention"          # Prevent system crashes
+    
+  # Notes
+  description: "Safe training configuration to prevent system crashes - reduced model size and batch size" 

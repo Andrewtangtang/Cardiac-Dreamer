@@ -299,7 +299,7 @@ class CrossPatientTransitionsDataset(Dataset):
         return patient_counts
 
 
-def get_patient_splits(data_dir: str, shuffle_patients: bool = True, balance_by_samples: bool = True, random_seed: int = 42) -> Tuple[List[str], List[str], List[str]]:
+def get_patient_splits(data_dir: str, shuffle_patients: bool = True, balance_by_samples: bool = True, random_seed: int = 40) -> Tuple[List[str], List[str], List[str]]:
     """
     Automatically detect patient folders and create train/val/test splits
     
