@@ -110,10 +110,31 @@ def analyze_patient_splits(data_dir: str) -> Dict:
     print(f"\nTotal: {total_patients} patients, {total_samples} samples")
     print("=" * 60)
     
+    # Check for empty datasets
+    if total_samples == 0:
+        print("\n[WARNING] No samples found in any dataset!")
+        print("This could indicate:")
+        print("  1. Data directory is empty or incorrect")
+        print("  2. Data format is not compatible")
+        print("  3. Patient split function returned empty lists")
+        print(f"  Data directory checked: {data_dir}")
+        print(f"  Train patients: {train_patients}")
+        print(f"  Val patients: {val_patients}")
+        print(f"  Test patients: {test_patients}")
+        return splits_info, {'train': train_dataset, 'val': val_dataset, 'test': test_dataset}
+    
+    if total_patients == 0:
+        print("\n[WARNING] No patients found!")
+        return splits_info, {'train': train_dataset, 'val': val_dataset, 'test': test_dataset}
+    
     for split_name, info in splits_info.items():
         print(f"\n{split_name.upper()} Set:")
-        print(f"  Number of Patients: {info['patient_count']} ({info['patient_count']/total_patients:.1%})")
-        print(f"  Total Samples: {info['total_samples']} ({info['total_samples']/total_samples:.1%})")
+        # Safe percentage calculation
+        patient_pct = (info['patient_count']/total_patients*100) if total_patients > 0 else 0
+        sample_pct = (info['total_samples']/total_samples*100) if total_samples > 0 else 0
+        
+        print(f"  Number of Patients: {info['patient_count']} ({patient_pct:.1f}%)")
+        print(f"  Total Samples: {info['total_samples']} ({sample_pct:.1f}%)")
         print(f"  Patient List: {info['patients']}")
         print(f"  Samples per Patient:")
         for patient, count in info['sample_counts'].items():
