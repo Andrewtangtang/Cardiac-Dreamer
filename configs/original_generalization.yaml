@@ -1,0 +1,89 @@
+
+model:
+  # Model architecture parameters
+  token_type: "patch"             # Using patch tokens (more efficient)
+  d_model: 512                    # REDUCED from 768 to save memory
+  num_heads: 8                    # REDUCED from 12 to save memory
+  num_layers: 4                   # REDUCED from 6 to save memory
+  feature_dim: 49                 # Spatial feature dimension (7x7=49)
+  in_channels: 1                  # Input image channels (grayscale)
+  use_pretrained: true            # Use ImageNet pretrained ResNet34
+  
+  # Optimization parameters
+  lr: 4e-5                        # REDUCED learning rate for stability
+  weight_decay: 1e-5              # Balanced weight decay
+  
+  # Loss function parameters
+  lambda_t2_action: 1.0           # Equal weighting for at1 and at2
+  smooth_l1_beta: 1.0             # Standard beta
+  primary_task_only: false        # Use both at1 and at2 losses
+  
+  # Advanced settings
+  use_flash_attn: false           # Disable flash attention for stability
+
+training:
+  # Data loading parameters - REDUCED FOR SAFETY
+  batch_size: 8                   # VERY SMALL batch size to prevent OOM
+  num_workers: 2                  # REDUCED workers to save CPU/RAM
+  
+  # Training schedule
+  max_epochs: 60                  # Reduced epochs for testing
+  early_stop_patience: 15         # Reduced patience
+  check_val_every_n_epoch: 2      # Less frequent validation
+  
+  # Optimization settings
+  gradient_clip_val: 0.3          # REDUCED gradient clipping
+  accumulate_grad_batches: 2      # ACCUMULATE gradients to simulate larger batch
+  log_every_n_steps: 25           # Less frequent logging
+  
+  # Hardware settings
+  accelerator: "auto"             # Hardware accelerator
+  precision: 32                  # MIXED PRECISION to save memory
+  
+# Data configuration
+data:
+  # Use only data_0513_01 since it's the only one with images
+  train_ratio: 0.7                # 70% for training
+  val_ratio: 0.15                 # 15% for validation  
+  test_ratio: 0.15                # 15% for testing
+  
+  # Data augmentation - DISABLED for stability
+  augmentation:
+    enabled: true                 # ENABLE augmentation to save memory
+    rotation_range: 2             # No augmentation
+    brightness_range: 0.03        # No augmentation
+    contrast_range: 0.03          # No augmentation
+    noise_std: 0.002               # No augmentation
+
+# Experiment tracking
+experiment:
+  # Weights & Biases
+  use_wandb: true                 # Keep WandB for monitoring
+  wandb_project: "cardiac-dreamer-safe"
+  wandb_entity: null
+
+# Regularization strategies# Regularization strategies
+regularization:
+  # Dropout settings
+  dropout_rate: 0.15               # Moderate dropout for regularization
+  
+  # Learning rate scheduling
+  lr_scheduler:
+    type: "reduce_on_plateau"     # Reduce LR when validation loss plateaus
+    factor: 0.6                   # Reduce by 30%
+    patience: 10                   # Wait 8 epochs before reducing
+    min_lr: 1e-6                  # Minimum learning rate
+    
+  # Model averaging
+  use_ema: true                   # Use Exponential Moving Average of weights
+  ema_decay: 0.9995              # Slightly higher EMA decay rate
+  
+  # Tags for experiment organization
+  tags:
+    - "safe_training"             # Safe configuration
+    - "patch_tokens"              # Using patch tokens
+    - "reduced_resources"         # Reduced resource usage
+    - "crash_prevention"          # Prevent system crashes
+    
+  # Notes
+  description: "Enhanced version of successful safe_training.yaml with added regularization and larger batch size" 

@@ -1,0 +1,107 @@
+# Improved Generalization Configuration
+# Focus on reducing overfitting and improving validation performance
+
+model:
+  # Model architecture parameters - REDUCED complexity to prevent overfitting
+  token_type: "patch"             # Using patch tokens (more expressive)
+  d_model: 256                    # FURTHER REDUCED from 512 to 256
+  num_heads: 4                    # FURTHER REDUCED from 8 to 4
+  num_layers: 3                   # FURTHER REDUCED from 4 to 3
+  feature_dim: 49                 # Spatial feature dimension (7x7=49)
+  in_channels: 1                  # Input image channels (grayscale)
+  use_pretrained: true            # Use ImageNet pretrained ResNet34
+  
+  # Optimization parameters - MORE CONSERVATIVE
+  lr: 1e-5                        # MUCH LOWER learning rate for stability
+  weight_decay: 1e-4              # INCREASED weight decay for regularization
+  
+  # Loss function parameters
+  lambda_t2_action: 0.5           # REDUCED auxiliary loss weight
+  smooth_l1_beta: 1.0             # Standard beta
+  primary_task_only: false        # Keep auxiliary task for regularization
+  
+  # Advanced settings
+  use_flash_attn: false           # Disable flash attention for stability
+
+training:
+  # Data loading parameters
+  batch_size: 8                   # Slightly larger batch for more stable gradients
+  num_workers: 2                  # Keep low for stability
+  
+  # Training schedule - MORE PATIENT
+  max_epochs: 100                 # More epochs but with early stopping
+  early_stop_patience: 15         # INCREASED patience for early stopping
+  check_val_every_n_epoch: 1      # FREQUENT validation monitoring
+  
+  # Optimization settings - STRONGER REGULARIZATION
+  gradient_clip_val: 0.3          # TIGHTER gradient clipping
+  accumulate_grad_batches: 2      # REDUCED accumulation for more frequent updates
+  log_every_n_steps: 25           # More frequent logging for monitoring
+  
+  # Hardware settings
+  accelerator: "auto"             # Hardware accelerator
+  precision: 32                   # Keep 32-bit for stability
+  
+# Data configuration - ENABLE AUGMENTATION
+data:
+  # Cross-patient split ratios
+  train_ratio: 0.7                # 70% for training
+  val_ratio: 0.2                  # INCREASED validation ratio to 20%
+  test_ratio: 0.1                 # Reduced test ratio to 10%
+  
+  # Data augmentation - ENABLE for better generalization
+  augmentation:
+    enabled: true                 # ENABLE augmentation
+    rotation_range: 5             # Small rotation (±5 degrees)
+    brightness_range: 0.1         # Small brightness variation (±10%)
+    contrast_range: 0.1           # Small contrast variation (±10%)
+    noise_std: 0.01               # Add small gaussian noise
+    
+# Regularization strategies
+regularization:
+  # Dropout settings
+  dropout_rate: 0.3               # Add dropout for regularization
+  
+  # Learning rate scheduling
+  lr_scheduler:
+    type: "reduce_on_plateau"     # Reduce LR when validation loss plateaus
+    factor: 0.5                   # Reduce by half
+    patience: 5                   # Wait 5 epochs before reducing
+    min_lr: 1e-7                  # Minimum learning rate
+    
+  # Model averaging
+  use_ema: true                   # Use Exponential Moving Average of weights
+  ema_decay: 0.999                # EMA decay rate
+
+# Experiment tracking
+experiment:
+  # Weights & Biases
+  use_wandb: true                 
+  wandb_project: "cardiac-dreamer-generalization"
+  wandb_entity: null
+  
+  # Tags for experiment organization
+  tags:
+    - "improved_generalization"    
+    - "patch_tokens"              # Updated to reflect patch tokens
+    - "anti_overfitting"          
+    - "data_augmentation"         
+    - "stronger_regularization"   
+    
+  # Notes
+  description: "Configuration focused on improving validation performance and reducing overfitting through stronger regularization, data augmentation, and reduced model complexity using patch tokens"
+
+# Advanced training strategies
+advanced:
+  # Label smoothing for better generalization
+  label_smoothing: 0.1            # Smooth labels slightly
+  
+  # Mixup augmentation
+  mixup_alpha: 0.2                # Mix training samples
+  
+  # Validation monitoring
+  monitor_metric: "val_main_task_loss"  # Primary metric to monitor
+  
+  # Save strategy
+  save_top_k: 3                   # Save top 3 models based on validation loss
+  save_last: true                 # Also save the last checkpoint 

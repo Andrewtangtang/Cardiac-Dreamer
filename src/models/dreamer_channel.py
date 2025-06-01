@@ -185,9 +185,9 @@ class DreamerChannel(nn.Module):
             action: 6-DOF action [batch_size, 6]
             
         Returns:
-            transformed_channel_tokens: Transformed channel tokens [batch_size, 512, feature_dim]
+            reconstructed_channel_tokens: Reconstructed channel tokens [batch_size, 512, feature_dim]
             full_sequence: Full sequence of transformed tokens [batch_size, 513, d_model]
-            predicted_next_features: Predicted next frame features [batch_size, 512, feature_dim]
+            pooled_next_frame_features: Pooled next frame features [batch_size, 512]
         """
         batch_size = channel_tokens.shape[0]
         
@@ -218,19 +218,19 @@ class DreamerChannel(nn.Module):
         transformed_action_token = transformed_sequence[:, 0:1, :]
         transformed_channel_tokens = transformed_sequence[:, 1:, :]
         
-        # Project channel tokens back to feature dimension
+        # Project channel tokens back to feature dimension for reconstruction
         # [B, 512, d_model] -> [B, 512, feature_dim]
         reconstructed_channel_tokens = self.output_projection(transformed_channel_tokens)
         
-        # New: Project action token to predict next frame features
-        # [B, 1, d_model] -> [B, 1, feature_dim]
-        next_frame_features = self.next_frame_projection(transformed_action_token)
+        # Generate next frame features from transformed channel tokens
+        # [B, 512, d_model] -> [B, 512, feature_dim]
+        next_frame_features = self.next_frame_projection(transformed_channel_tokens)
         
-        # Expand to match channel dimensions
-        # [B, 1, feature_dim] -> [B, 512, feature_dim]
-        predicted_next_features = next_frame_features.expand(-1, 512, -1)
+        # Pool each channel token's features to get a single value per channel
+        # [B, 512, feature_dim] -> [B, 512]
+        pooled_next_frame_features = torch.mean(next_frame_features, dim=2)
         
-        return reconstructed_channel_tokens, transformed_sequence, predicted_next_features
+        return reconstructed_channel_tokens, transformed_sequence, pooled_next_frame_features
 
 
 def get_dreamer_channel(
@@ -267,14 +267,20 @@ def pool_features(channel_tokens: torch.Tensor) -> torch.Tensor:
     Pools channel tokens to get a fixed-size feature vector
     
     Args:
-        channel_tokens: Channel tokens from DreamerChannel [batch_size, 512, feature_dim]
+        channel_tokens: Channel tokens [batch_size, 512, feature_dim] or already pooled [batch_size, 512]
         
     Returns:
         pooled_features: Pooled feature vector [batch_size, 512]
     """
-    # Global average pooling across the spatial dimension
-    # [B, 512, feature_dim] -> [B, 512]
-    return torch.mean(channel_tokens, dim=2)
+    if len(channel_tokens.shape) == 2:
+        # Already pooled [B, 512] -> return as is
+        return channel_tokens
+    elif channel_tokens.shape[-1] == 1:
+        # Already pooled with keepdim [B, 512, 1] -> [B, 512]
+        return channel_tokens.squeeze(-1)
+    else:
+        # Need to pool [B, 512, feature_dim] -> [B, 512]
+        return torch.mean(channel_tokens, dim=2)
 
 
 if __name__ == "__main__":
@@ -324,12 +330,12 @@ if __name__ == "__main__":
         print(f"  Channel tokens: {channel_tokens.shape}")
         
         # Forward pass through DreamerChannel
-        reconstructed_channels, full_sequence, predicted_next_features = dreamer(channel_tokens, action)
+        reconstructed_channels, full_sequence, pooled_next_frame_features = dreamer(channel_tokens, action)
         
         print(f"\nOutput shapes:")
         print(f"  Reconstructed channels: {reconstructed_channels.shape}")
         print(f"  Full sequence: {full_sequence.shape}")
-        print(f"  Predicted next features: {predicted_next_features.shape}")  # New output
+        print(f"  Pooled next frame features: {pooled_next_frame_features.shape}")
         
         # Check that the shapes are as expected
         assert reconstructed_channels.shape == (batch_size, 512, 49), \
@@ -338,12 +344,13 @@ if __name__ == "__main__":
         assert full_sequence.shape == (batch_size, 513, 768), \
             f"Expected full_sequence shape {(batch_size, 513, 768)}, got {full_sequence.shape}"
             
-        assert predicted_next_features.shape == (batch_size, 512, 49), \
-            f"Expected predicted_next_features shape {(batch_size, 512, 49)}, got {predicted_next_features.shape}"
+        assert pooled_next_frame_features.shape == (batch_size, 512), \
+            f"Expected pooled_next_frame_features shape {(batch_size, 512)}, got {pooled_next_frame_features.shape}"
         
         # Test pooling on both current and next features
         pooled_current = pool_features(reconstructed_channels)
-        pooled_next = pool_features(predicted_next_features)
+        # pooled_next_frame_features is already [B, 512], no need to pool again
+        pooled_next = pooled_next_frame_features
         
         print(f"\nPooled feature shapes:")
         print(f"  Pooled current features: {pooled_current.shape}")

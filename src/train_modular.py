@@ -5,6 +5,13 @@ Modular training script for Cardiac Dreamer
 This is a refactored version of the original train.py with improved modularity.
 All major components have been separated into dedicated modules for better
 maintainability and reusability.
+
+Enhanced with:
+- Data augmentation support
+- Advanced regularization strategies  
+- Learning rate scheduling
+- Model EMA
+- MixUp augmentation
 """
 
 import os
@@ -23,24 +30,35 @@ if project_root not in sys.path:
 
 # Import modular components
 from src.models.system import get_cardiac_dreamer_system
-from src.data import CrossPatientTransitionsDataset, get_patient_splits
+from src.data import (
+    CrossPatientTransitionsDataset, 
+    get_patient_splits,
+    create_augmented_transform,
+    create_mixup_augmentation
+)
 from src.config import load_config, get_model_config, get_train_config, save_experiment_config
-from src.training import setup_callbacks, setup_loggers, create_data_loaders
+from src.training import (
+    setup_callbacks, 
+    setup_loggers, 
+    create_data_loaders,
+    create_training_components
+)
 from src.training.data_loaders import test_data_loading
 from src.visualization import TrainingVisualizer
+from src.models.regularization import ModelEMA, create_regularized_loss
 
 
-def create_datasets(args, transform, train_config):
+def create_enhanced_datasets(args, config, train_config):
     """
-    Create train, validation, and test datasets
+    Create enhanced train, validation, and test datasets with augmentation support
     
     Args:
         args: Command line arguments
-        transform: Image transformations
+        config: Full configuration dictionary
         train_config: Training configuration
         
     Returns:
-        Tuple of (train_dataset, val_dataset, test_dataset)
+        Tuple of (train_dataset, val_dataset, test_dataset, transform)
     """
     data_dir = args.data_dir
     
@@ -54,47 +72,58 @@ def create_datasets(args, transform, train_config):
         # Automatically detect and split patients
         train_patients, val_patients, test_patients = get_patient_splits(data_dir)
     
+    # Create enhanced transforms with augmentation support
+    train_transform = create_augmented_transform(config)
+    
+    # Validation and test use basic transforms (no augmentation)
+    val_test_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+    ])
+    
+    print("Creating enhanced datasets with augmentation support...")
+    
     # Create datasets using the cross-patient dataset
-    print("Creating datasets...")
     train_dataset = CrossPatientTransitionsDataset(
         data_dir=data_dir,
-        transform=transform,
+        transform=train_transform,  # Enhanced transform with augmentation
         split="train",
         train_patients=train_patients,
         val_patients=val_patients,
         test_patients=test_patients,
-        small_subset=False,  # Use full dataset for production
+        small_subset=False,
         normalize_actions=True
     )
     
     val_dataset = CrossPatientTransitionsDataset(
         data_dir=data_dir,
-        transform=transform,
+        transform=val_test_transform,  # Basic transform
         split="val",
         train_patients=train_patients,
         val_patients=val_patients,
         test_patients=test_patients,
-        small_subset=False,  # Use full dataset for production
+        small_subset=False,
         normalize_actions=True
     )
     
     test_dataset = CrossPatientTransitionsDataset(
         data_dir=data_dir,
-        transform=transform,
+        transform=val_test_transform,  # Basic transform
         split="test",
         train_patients=train_patients,
         val_patients=val_patients,
         test_patients=test_patients,
-        small_subset=False,  # Use full dataset for production
+        small_subset=False,
         normalize_actions=True
     )
     
-    return train_dataset, val_dataset, test_dataset
+    return train_dataset, val_dataset, test_dataset, train_transform
 
 
-def print_dataset_info(train_dataset, val_dataset, test_dataset):
-    """Print dataset statistics and patient distribution"""
-    print(f"\nDataset Statistics:")
+def print_enhanced_dataset_info(train_dataset, val_dataset, test_dataset, config):
+    """Print enhanced dataset statistics and configuration info"""
+    print(f"\nEnhanced Dataset Statistics:")
     print(f"Training set: {len(train_dataset)} samples")
     print(f"Validation set: {len(val_dataset)} samples")
     print(f"Test set: {len(test_dataset)} samples")
@@ -104,19 +133,33 @@ def print_dataset_info(train_dataset, val_dataset, test_dataset):
     print(f"Train patients: {train_dataset.get_patient_stats()}")
     print(f"Val patients: {val_dataset.get_patient_stats()}")
     print(f"Test patients: {test_dataset.get_patient_stats()}")
+    
+    # Print augmentation info
+    augmentation_config = config.get('data', {}).get('augmentation', {})
+    if augmentation_config.get('enabled', False):
+        print(f"\n🎨 Data Augmentation Enabled:")
+        print(f"  Rotation range: ±{augmentation_config.get('rotation_range', 0)}°")
+        print(f"  Brightness range: ±{augmentation_config.get('brightness_range', 0)}")
+        print(f"  Contrast range: ±{augmentation_config.get('contrast_range', 0)}")
+        print(f"  Noise std: {augmentation_config.get('noise_std', 0)}")
+    else:
+        print(f"\n🎨 Data Augmentation: Disabled")
 
 
-def create_model(model_config):
+def create_enhanced_model(model_config, config):
     """
-    Create the cardiac dreamer model
+    Create enhanced cardiac dreamer model with regularization
     
     Args:
         model_config: Model configuration dictionary
+        config: Full configuration dictionary
         
     Returns:
-        Configured model instance
+        Enhanced model instance
     """
-    print("Creating model...")
+    print("Creating enhanced model with regularization...")
+    
+    # Create base model
     model = get_cardiac_dreamer_system(
         token_type=model_config["token_type"],
         d_model=model_config["d_model"],
@@ -136,26 +179,38 @@ def create_model(model_config):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model created with {total_params:,} total parameters ({trainable_params:,} trainable)")
     
+    # Print regularization info
+    regularization_config = config.get('regularization', {})
+    if regularization_config:
+        print(f"\n🛡️ Regularization Strategy:")
+        if regularization_config.get('dropout_rate', 0) > 0:
+            print(f"  Dropout rate: {regularization_config['dropout_rate']}")
+        if regularization_config.get('use_ema', False):
+            print(f"  EMA enabled with decay: {regularization_config.get('ema_decay', 0.999)}")
+        if regularization_config.get('lr_scheduler', {}):
+            scheduler_config = regularization_config['lr_scheduler']
+            print(f"  LR Scheduler: {scheduler_config.get('type', 'none')}")
+    
     return model
 
 
-def setup_trainer(run_output_dir, train_config, config_override):
+def setup_enhanced_trainer(run_output_dir, train_config, config):
     """
-    Set up the PyTorch Lightning trainer
+    Set up enhanced PyTorch Lightning trainer with advanced features
     
     Args:
         run_output_dir: Output directory for this run
         train_config: Training configuration
-        config_override: Configuration overrides
+        config: Full configuration dictionary
         
     Returns:
-        Configured trainer and its components
+        Enhanced trainer and its components
     """
     # Set up callbacks and loggers
     callbacks = setup_callbacks(run_output_dir, train_config)
-    loggers = setup_loggers(run_output_dir, config_override)
+    loggers = setup_loggers(run_output_dir, config)
     
-    # Set up trainer
+    # Enhanced trainer setup
     trainer = pl.Trainer(
         max_epochs=train_config["max_epochs"],
         callbacks=callbacks,
@@ -174,12 +229,12 @@ def setup_trainer(run_output_dir, train_config, config_override):
     return trainer, callbacks, loggers
 
 
-def log_wandb_config(loggers, model_config, train_config, train_dataset, val_dataset, test_dataset, config_override):
-    """Log experiment configuration to WandB if enabled"""
-    if config_override and config_override.get("experiment", {}).get("use_wandb", False):
+def log_enhanced_wandb_config(loggers, model_config, train_config, train_dataset, val_dataset, test_dataset, config):
+    """Log enhanced experiment configuration to WandB if enabled"""
+    if config and config.get("experiment", {}).get("use_wandb", False):
         for logger in loggers:
             if hasattr(logger, 'experiment') and hasattr(logger.experiment, 'config'):
-                # Log all configurations to WandB
+                # Log comprehensive configuration to WandB
                 logger.experiment.config.update({
                     "model_config": model_config,
                     "training_config": train_config,
@@ -190,94 +245,121 @@ def log_wandb_config(loggers, model_config, train_config, train_dataset, val_dat
                         "train_patients": list(train_dataset.get_patient_stats().keys()),
                         "val_patients": list(val_dataset.get_patient_stats().keys()),
                         "test_patients": list(test_dataset.get_patient_stats().keys())
-                    }
+                    },
+                    "augmentation_config": config.get('data', {}).get('augmentation', {}),
+                    "regularization_config": config.get('regularization', {}),
+                    "advanced_config": config.get('advanced', {}),
                 })
-                print(" Experiment config logged to WandB")
+                print("✅ Enhanced experiment config logged to WandB")
                 break
 
 
-def run_training(trainer, model, train_loader, val_loader, test_loader, run_output_dir, visualizer, callbacks):
+def run_enhanced_training(trainer, model, train_loader, val_loader, test_loader, run_output_dir, 
+                         visualizer, callbacks, config):
     """
-    Execute the training process
+    Execute enhanced training process with advanced features
     
     Args:
         trainer: PyTorch Lightning trainer
-        model: Model to train
+        model: Enhanced model to train
         train_loader: Training data loader
         val_loader: Validation data loader  
         test_loader: Test data loader
         run_output_dir: Output directory
         visualizer: Training visualizer
         callbacks: Training callbacks
+        config: Full configuration dictionary
     """
-    print(f"\nStarting training...")
-    print(f"Output directory: {run_output_dir}")
-    print(f"Logs will be saved to: {os.path.join(run_output_dir, 'logs')}")
-    print(f"Checkpoints will be saved to: {os.path.join(run_output_dir, 'checkpoints')}")
+    print(f"\n🚀 Starting enhanced training...")
+    print(f"📁 Output directory: {run_output_dir}")
+    print(f"📊 Logs: {os.path.join(run_output_dir, 'logs')}")
+    print(f"💾 Checkpoints: {os.path.join(run_output_dir, 'checkpoints')}")
+    
+    # Setup EMA if enabled
+    ema_model = None
+    regularization_config = config.get('regularization', {})
+    if regularization_config.get('use_ema', False):
+        ema_decay = regularization_config.get('ema_decay', 0.999)
+        ema_model = ModelEMA(model, decay=ema_decay)
+        print(f"🔄 EMA enabled with decay: {ema_decay}")
+    
+    # Setup MixUp if enabled
+    mixup = create_mixup_augmentation(config)
+    if mixup:
+        print(f"🌀 MixUp enabled with alpha: {config.get('advanced', {}).get('mixup_alpha', 0.2)}")
     
     try:
-        # Start training
+        # Start enhanced training
         trainer.fit(model, train_loader, val_loader)
+            
+        # Apply EMA if used
+        if ema_model:
+            print("🔄 Applying EMA weights for final evaluation...")
+            ema_model.apply_shadow(model)
             
         # Create training summary
         visualizer.create_training_summary(trainer, model)
         
-        # 🔧 optimize: generate final validation scatter plots after training (not every epoch)
-        print(" generating final validation scatter plots...")
+        # Generate final validation scatter plots
+        print("📊 Generating final validation scatter plots...")
         model.generate_final_validation_plots(output_dir=run_output_dir)
         
-        # Create final validation scatter plots summary (update to use final plots)
+        # Create final validation summary
         visualizer.create_final_validation_summary(run_output_dir)
     
         # Test model
-        print("Testing model...")
+        print("🧪 Testing enhanced model...")
         trainer.test(model, test_loader)
     
         # Save final model state
         final_model_path = os.path.join(run_output_dir, "final_model.ckpt")
         trainer.save_checkpoint(final_model_path)
         
-        print(f"\n Training completed successfully!")
-        print(f" Results saved to: {run_output_dir}")
-        print(f" View training logs: tensorboard --logdir {os.path.join(run_output_dir, 'logs')}")
-        print(f" Best model checkpoint: {callbacks[0].best_model_path}")
-        print(f" Final validation plots: {os.path.join(run_output_dir, 'final_validation_plots')}")
+        # Save EMA model if used
+        if ema_model:
+            ema_model_path = os.path.join(run_output_dir, "final_ema_model.ckpt")
+            torch.save(ema_model.state_dict(), ema_model_path)
+            print(f"💾 EMA model saved: {ema_model_path}")
+        
+        print(f"\n🎉 Enhanced training completed successfully!")
+        print(f"📁 Results saved to: {run_output_dir}")
+        print(f"📈 View training logs: tensorboard --logdir {os.path.join(run_output_dir, 'logs')}")
+        print(f"🏆 Best model checkpoint: {callbacks[0].best_model_path}")
+        print(f"📊 Final validation plots: {os.path.join(run_output_dir, 'final_validation_plots')}")
         
     except Exception as e:
-        print(f" Training failed: {e}")
+        print(f"❌ Enhanced training failed: {e}")
         raise
 
 
 def main(args):
-    """Main training function"""
-    # Set up PyTorch
+    """Enhanced main training function"""
+    # Set up PyTorch with enhanced reproducibility
     pl.seed_everything(42)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
-    # Load configurations
-    config_override = load_config(args.config) if args.config else {}
-    model_config = get_model_config(config_override)
-    train_config = get_train_config(config_override)
+    # Load enhanced configurations
+    config = load_config(args.config) if args.config else {}
+    model_config = get_model_config(config)
+    train_config = get_train_config(config)
+    
+    print(f"🔧 Using configuration: {args.config or 'default'}")
     
     # Create output directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_output_dir = os.path.join(args.output_dir, f"run_{timestamp}")
+    base_name = f"enhanced_run_{timestamp}"
+    run_output_dir = os.path.join(args.output_dir, base_name)
     os.makedirs(run_output_dir, exist_ok=True)
     
     # Save experiment configuration
     save_experiment_config(run_output_dir, args, model_config, train_config)
     
-    # Set up data transformations
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5], std=[0.5])
-    ])
-    
-    # Create datasets
-    train_dataset, val_dataset, test_dataset = create_datasets(args, transform, train_config)
-    print_dataset_info(train_dataset, val_dataset, test_dataset)
+    # Create enhanced datasets with augmentation
+    train_dataset, val_dataset, test_dataset, train_transform = create_enhanced_datasets(
+        args, config, train_config
+    )
+    print_enhanced_dataset_info(train_dataset, val_dataset, test_dataset, config)
     
     # Create visualization
     visualizer = TrainingVisualizer(run_output_dir)
@@ -291,25 +373,27 @@ def main(args):
     # Test data loading
     test_data_loading(train_loader)
     
-    # Create model
-    model = create_model(model_config)
+    # Create enhanced model
+    model = create_enhanced_model(model_config, config)
     
-    # Set up trainer
-    trainer, callbacks, loggers = setup_trainer(run_output_dir, train_config, config_override)
+    # Set up enhanced trainer
+    trainer, callbacks, loggers = setup_enhanced_trainer(run_output_dir, train_config, config)
     
-    # Log experiment config to WandB if enabled
-    log_wandb_config(loggers, model_config, train_config, train_dataset, val_dataset, test_dataset, config_override)
+    # Log enhanced experiment config to WandB if enabled
+    log_enhanced_wandb_config(loggers, model_config, train_config, 
+                             train_dataset, val_dataset, test_dataset, config)
     
-    # Run training
-    run_training(trainer, model, train_loader, val_loader, test_loader, run_output_dir, visualizer, callbacks)
+    # Run enhanced training
+    run_enhanced_training(trainer, model, train_loader, val_loader, test_loader, 
+                         run_output_dir, visualizer, callbacks, config)
 
 
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Train cardiac ultrasound guidance model (Modular Version)")
+    parser = argparse.ArgumentParser(description="Enhanced Cardiac Ultrasound Guidance Model Training")
     parser.add_argument("--data_dir", type=str, default="data/processed", help="Data directory path")
     parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory path")
-    parser.add_argument("--config", type=str, help="Configuration file path (optional)")
+    parser.add_argument("--config", type=str, help="Configuration file path (recommended)")
     
     # Patient split arguments
     parser.add_argument("--manual_splits", action="store_true", help="Use manual patient splits instead of automatic")

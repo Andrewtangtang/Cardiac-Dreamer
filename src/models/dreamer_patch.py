@@ -92,7 +92,7 @@ class PatchTokenEmbedding(nn.Module):
         """
         Args:
             feature_map: Feature map from ResNet [batch_size, 512, 7, 7]
-               
+                
         Returns:
             Patch embeddings of shape [batch_size, 49, d_model]
         """
