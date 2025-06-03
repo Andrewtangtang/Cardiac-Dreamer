@@ -429,7 +429,7 @@ class CardiacDreamerSystem(pl.LightningModule):
             "epoch": current_epoch
         }
         
-        print(f"📊 Validation epoch {current_epoch}: collected {len(all_preds)} samples' predictions")
+        print(f"[VALIDATION] Validation epoch {current_epoch}: collected {len(all_preds)} samples' predictions")
         print(f"    will generate scatter plots after training")
         
         # 🔧 freeze memory
@@ -441,10 +441,10 @@ class CardiacDreamerSystem(pl.LightningModule):
     def generate_final_validation_plots(self, output_dir: str = None):
         """Generate validation scatter plots at the end of training"""
         if not hasattr(self, 'latest_validation_data') or self.latest_validation_data is None:
-            print("⚠️ no validation data available for generating scatter plots")
+            print("[WARNING] no validation data available for generating scatter plots")
             return
         
-        print("📊 generating final validation scatter plots...")
+        print("[VALIDATION] generating final validation scatter plots...")
         
         # get saved validation data
         all_preds = self.latest_validation_data["predictions"]
@@ -542,7 +542,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"📊 final validation scatter plots saved to: {plots_dir}")
+        print(f"[VALIDATION] final validation scatter plots saved to: {plots_dir}")
         print(f"   - individual plots: final_validation_scatter_[dimension].png")
         print(f"   - combined plot: final_validation_scatter_combined.png")
         print(f"   - based on epoch {final_epoch} with {len(all_preds)} samples")

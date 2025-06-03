@@ -25,7 +25,7 @@ model:
 
 training:
   # Data loading parameters - OPTIMIZED FOR FASTER PATCH PROCESSING
-  batch_size: 16                  # Can potentially use larger batch due to faster forward pass
+  batch_size: 8                  # Can potentially use larger batch due to faster forward pass
   num_workers: 4                  # Adjust based on CPU cores
   
   # Training schedule

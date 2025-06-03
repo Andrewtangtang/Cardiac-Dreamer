@@ -32,9 +32,14 @@ class TrainingVisualizer:
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
         
         # Dataset sizes
-        sizes = [len(train_dataset), len(val_dataset), len(test_dataset)]
-        labels = ['Train', 'Validation', 'Test']
-        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']
+        if test_dataset:
+            sizes = [len(train_dataset), len(val_dataset), len(test_dataset)]
+            labels = ['Train', 'Validation', 'Test']
+            colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']
+        else:
+            sizes = [len(train_dataset), len(val_dataset)]
+            labels = ['Train', 'Validation']
+            colors = ['#FF6B6B', '#4ECDC4']
         
         axes[0, 0].pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
         axes[0, 0].set_title('Dataset Distribution')
@@ -42,20 +47,28 @@ class TrainingVisualizer:
         # Patient distribution
         train_stats = train_dataset.get_patient_stats()
         val_stats = val_dataset.get_patient_stats()
-        test_stats = test_dataset.get_patient_stats()
+        test_stats = test_dataset.get_patient_stats() if test_dataset else {}
         
         # Bar plot for patient statistics
         patients = list(set(list(train_stats.keys()) + list(val_stats.keys()) + list(test_stats.keys())))
         train_counts = [train_stats.get(p, 0) for p in patients]
         val_counts = [val_stats.get(p, 0) for p in patients]
-        test_counts = [test_stats.get(p, 0) for p in patients]
         
-        x = np.arange(len(patients))
-        width = 0.25
+        if test_dataset:
+            test_counts = [test_stats.get(p, 0) for p in patients]
+            x = np.arange(len(patients))
+            width = 0.25
+            
+            axes[0, 1].bar(x - width, train_counts, width, label='Train', color=colors[0])
+            axes[0, 1].bar(x, val_counts, width, label='Val', color=colors[1])
+            axes[0, 1].bar(x + width, test_counts, width, label='Test', color=colors[2])
+        else:
+            x = np.arange(len(patients))
+            width = 0.35
+            
+            axes[0, 1].bar(x - width/2, train_counts, width, label='Train', color=colors[0])
+            axes[0, 1].bar(x + width/2, val_counts, width, label='Val', color=colors[1])
         
-        axes[0, 1].bar(x - width, train_counts, width, label='Train', color=colors[0])
-        axes[0, 1].bar(x, val_counts, width, label='Val', color=colors[1])
-        axes[0, 1].bar(x + width, test_counts, width, label='Test', color=colors[2])
         axes[0, 1].set_xlabel('Patients')
         axes[0, 1].set_ylabel('Number of Samples')
         axes[0, 1].set_title('Samples per Patient')
@@ -88,14 +101,17 @@ class TrainingVisualizer:
             'total_samples': {
                 'train': len(train_dataset),
                 'val': len(val_dataset),
-                'test': len(test_dataset)
+                'test': len(test_dataset) if test_dataset else 0
             },
             'patient_distribution': {
                 'train': train_stats,
                 'val': val_stats,
-                'test': test_stats
+                'test': test_stats if test_dataset else {}
             }
         }
+        if not test_dataset:
+            stats['note'] = 'No test set (custom split with patients 1-5 as validation)'
+        
         with open(stats_file, 'w') as f:
             json.dump(stats, f, indent=2)
         
@@ -187,7 +203,7 @@ class TrainingVisualizer:
                 axes[1, 0].set_title('T2 Action Prediction Loss (Auxiliary)')
                 
         except KeyError as e:
-            print(f"⚠️ Warning: Column {e} not found in training logs")
+            print(f"[WARNING] Column {e} not found in training logs")
             axes[1, 0].text(0.5, 0.5, f'Auxiliary loss data not available\n(Column {e} missing)', 
                            ha='center', va='center', transform=axes[1, 0].transAxes)
             axes[1, 0].set_title('T2 Action Prediction Loss (Auxiliary)')
@@ -221,7 +237,7 @@ Main Task Loss: {main_task_loss_str}
 Training completed successfully.
 Focus on Main Task Loss for performance.
 
-📊 Final validation plots generated at training end"""
+[CHART] Final validation plots generated at training end"""
             
             axes[1, 1].text(0.1, 0.5, metrics_text, fontsize=11, 
                            verticalalignment='center', fontfamily='monospace')
@@ -255,8 +271,8 @@ Focus on Main Task Loss for performance.
         summary_plot_path = os.path.join(self.plots_dir, 'final_validation_scatter_plots.png')
         shutil.copy2(combined_plot, summary_plot_path)
         
-        print(f"📊 Final validation scatter plots copied to: {summary_plot_path}")
-        print(f"📁 All final validation plots available in: {final_plots_dir}")
+        print(f"[CHART] Final validation scatter plots copied to: {summary_plot_path}")
+        print(f"[FOLDER] All final validation plots available in: {final_plots_dir}")
         
         # Create a summary text file with information about the plots
         summary_info = {
@@ -277,4 +293,4 @@ Focus on Main Task Loss for performance.
         with open(summary_file, 'w') as f:
             json.dump(summary_info, f, indent=2)
         
-        print(f"📄 Final validation plots summary saved to: {summary_file}") 
+        print(f"[FILE] Final validation plots summary saved to: {summary_file}") 

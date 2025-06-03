@@ -19,11 +19,12 @@ def create_data_loaders(
     Args:
         train_dataset: Training dataset
         val_dataset: Validation dataset  
-        test_dataset: Test dataset
+        test_dataset: Test dataset (can be None)
         train_config: Training configuration dictionary
         
     Returns:
         Tuple of (train_loader, val_loader, test_loader)
+        Note: test_loader will be None if test_dataset is None
     """
     
     # Create training data loader
@@ -48,16 +49,19 @@ def create_data_loaders(
         drop_last=False
     )
     
-    # Create test data loader
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=train_config["batch_size"],
-        shuffle=False,
-        num_workers=min(train_config["num_workers"], 2),  # 🔧 limit worker number to prevent memory leaks
-        pin_memory=True if torch.cuda.is_available() else False,  # 🔧 use pin_memory only when GPU is available
-        persistent_workers=False,  # 🔧 disable persistent_workers to prevent memory accumulation
-        drop_last=False
-    )
+    # Create test data loader only if test dataset exists
+    if test_dataset is not None:
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=train_config["batch_size"],
+            shuffle=False,
+            num_workers=min(train_config["num_workers"], 2),  # 🔧 limit worker number to prevent memory leaks
+            pin_memory=True if torch.cuda.is_available() else False,  # 🔧 use pin_memory only when GPU is available
+            persistent_workers=False,  # 🔧 disable persistent_workers to prevent memory accumulation
+            drop_last=False
+        )
+    else:
+        test_loader = None
     
     return train_loader, val_loader, test_loader
 

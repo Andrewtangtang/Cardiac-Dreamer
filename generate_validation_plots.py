@@ -24,7 +24,7 @@ if current_file_dir not in sys.path:
 
 # Import model and dataset
 from src.models.system import get_cardiac_dreamer_system
-from src.train import CrossPatientTransitionsDataset, get_patient_splits
+from src.data import CrossPatientTransitionsDataset, get_patient_splits, get_custom_patient_splits_no_test
 
 
 def load_model_from_checkpoint(checkpoint_path: str):
@@ -84,12 +84,17 @@ def load_model_from_checkpoint(checkpoint_path: str):
     return model
 
 
-def create_validation_dataset(data_dir: str = "data/processed"):
+def create_validation_dataset(data_dir: str = "data/processed", use_custom_split: bool = False):
     """創建驗證集"""
     print(f"Creating validation dataset from: {data_dir}")
     
-    # 自動檢測患者分割
-    train_patients, val_patients, test_patients = get_patient_splits(data_dir)
+    # 選擇分割方法
+    if use_custom_split:
+        print("Using custom split: patients 1-5 as validation set")
+        train_patients, val_patients, test_patients = get_custom_patient_splits_no_test(data_dir)
+    else:
+        print("Using automatic patient splits")
+        train_patients, val_patients, test_patients = get_patient_splits(data_dir)
     
     # 設定圖像轉換
     transform = transforms.Compose([
@@ -302,6 +307,8 @@ def main():
                        help="Output directory for plots")
     parser.add_argument("--batch_size", type=int, default=16,
                        help="Batch size for inference")
+    parser.add_argument("--use_custom_split", action="store_true",
+                       help="Use custom split where patients 1-5 are validation set")
     
     args = parser.parse_args()
     
@@ -323,7 +330,7 @@ def main():
         model = load_model_from_checkpoint(args.checkpoint_path)
         
         # 2. 創建驗證集
-        val_dataset = create_validation_dataset(args.data_dir)
+        val_dataset = create_validation_dataset(args.data_dir, args.use_custom_split)
         
         # 創建 DataLoader
         val_loader = DataLoader(

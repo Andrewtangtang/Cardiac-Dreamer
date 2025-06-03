@@ -33,6 +33,7 @@ from src.models.system import get_cardiac_dreamer_system
 from src.data import (
     CrossPatientTransitionsDataset, 
     get_patient_splits,
+    get_custom_patient_splits_no_test,
     create_augmented_transform,
     create_mixup_augmentation
 )
@@ -63,7 +64,11 @@ def create_enhanced_datasets(args, config, train_config):
     data_dir = args.data_dir
     
     # Determine patient splits
-    if args.manual_splits:
+    if args.custom_split_no_test:
+        # Use custom split: patients 1-5 as validation, rest as training, no test
+        print("Using custom patient split: patients 1-5 as validation, rest as training, no test set")
+        train_patients, val_patients, test_patients = get_custom_patient_splits_no_test(data_dir)
+    elif args.manual_splits:
         # Use manually specified patient splits
         train_patients = args.train_patients.split(',') if args.train_patients else None
         val_patients = args.val_patients.split(',') if args.val_patients else None  
@@ -107,16 +112,21 @@ def create_enhanced_datasets(args, config, train_config):
         normalize_actions=True
     )
     
-    test_dataset = CrossPatientTransitionsDataset(
-        data_dir=data_dir,
-        transform=val_test_transform,  # Basic transform
-        split="test",
-        train_patients=train_patients,
-        val_patients=val_patients,
-        test_patients=test_patients,
-        small_subset=False,
-        normalize_actions=True
-    )
+    # Create test dataset only if test patients exist
+    if test_patients:
+        test_dataset = CrossPatientTransitionsDataset(
+            data_dir=data_dir,
+            transform=val_test_transform,  # Basic transform
+            split="test",
+            train_patients=train_patients,
+            val_patients=val_patients,
+            test_patients=test_patients,
+            small_subset=False,
+            normalize_actions=True
+        )
+    else:
+        test_dataset = None
+        print("No test dataset created (custom split with no test set)")
     
     return train_dataset, val_dataset, test_dataset, train_transform
 
@@ -126,24 +136,28 @@ def print_enhanced_dataset_info(train_dataset, val_dataset, test_dataset, config
     print(f"\nEnhanced Dataset Statistics:")
     print(f"Training set: {len(train_dataset)} samples")
     print(f"Validation set: {len(val_dataset)} samples")
-    print(f"Test set: {len(test_dataset)} samples")
+    if test_dataset:
+        print(f"Test set: {len(test_dataset)} samples")
+    else:
+        print(f"Test set: None (custom split with no test set)")
     
     # Print patient distribution
     print(f"\nPatient distribution:")
     print(f"Train patients: {train_dataset.get_patient_stats()}")
     print(f"Val patients: {val_dataset.get_patient_stats()}")
-    print(f"Test patients: {test_dataset.get_patient_stats()}")
+    if test_dataset:
+        print(f"Test patients: {test_dataset.get_patient_stats()}")
     
     # Print augmentation info
     augmentation_config = config.get('data', {}).get('augmentation', {})
     if augmentation_config.get('enabled', False):
-        print(f"\n🎨 Data Augmentation Enabled:")
+        print(f"\nData Augmentation Enabled:")
         print(f"  Rotation range: ±{augmentation_config.get('rotation_range', 0)}°")
         print(f"  Brightness range: ±{augmentation_config.get('brightness_range', 0)}")
         print(f"  Contrast range: ±{augmentation_config.get('contrast_range', 0)}")
         print(f"  Noise std: {augmentation_config.get('noise_std', 0)}")
     else:
-        print(f"\n🎨 Data Augmentation: Disabled")
+        print(f"\nData Augmentation: Disabled")
 
 
 def create_enhanced_model(model_config, config):
@@ -182,7 +196,7 @@ def create_enhanced_model(model_config, config):
     # Print regularization info
     regularization_config = config.get('regularization', {})
     if regularization_config:
-        print(f"\n🛡️ Regularization Strategy:")
+        print(f"\n[REGULARIZATION] Regularization Strategy:")
         if regularization_config.get('dropout_rate', 0) > 0:
             print(f"  Dropout rate: {regularization_config['dropout_rate']}")
         if regularization_config.get('use_ema', False):
@@ -234,23 +248,33 @@ def log_enhanced_wandb_config(loggers, model_config, train_config, train_dataset
     if config and config.get("experiment", {}).get("use_wandb", False):
         for logger in loggers:
             if hasattr(logger, 'experiment') and hasattr(logger.experiment, 'config'):
+                # Prepare dataset stats
+                dataset_stats = {
+                    "train_samples": len(train_dataset),
+                    "val_samples": len(val_dataset), 
+                    "train_patients": list(train_dataset.get_patient_stats().keys()),
+                    "val_patients": list(val_dataset.get_patient_stats().keys()),
+                }
+                
+                # Add test dataset stats only if it exists
+                if test_dataset:
+                    dataset_stats["test_samples"] = len(test_dataset)
+                    dataset_stats["test_patients"] = list(test_dataset.get_patient_stats().keys())
+                else:
+                    dataset_stats["test_samples"] = 0
+                    dataset_stats["test_patients"] = []
+                    dataset_stats["note"] = "No test set (custom split)"
+                
                 # Log comprehensive configuration to WandB
                 logger.experiment.config.update({
                     "model_config": model_config,
                     "training_config": train_config,
-                    "dataset_stats": {
-                        "train_samples": len(train_dataset),
-                        "val_samples": len(val_dataset), 
-                        "test_samples": len(test_dataset),
-                        "train_patients": list(train_dataset.get_patient_stats().keys()),
-                        "val_patients": list(val_dataset.get_patient_stats().keys()),
-                        "test_patients": list(test_dataset.get_patient_stats().keys())
-                    },
+                    "dataset_stats": dataset_stats,
                     "augmentation_config": config.get('data', {}).get('augmentation', {}),
                     "regularization_config": config.get('regularization', {}),
                     "advanced_config": config.get('advanced', {}),
                 })
-                print("✅ Enhanced experiment config logged to WandB")
+                print("[SUCCESS] Enhanced experiment config logged to WandB")
                 break
 
 
@@ -270,10 +294,10 @@ def run_enhanced_training(trainer, model, train_loader, val_loader, test_loader,
         callbacks: Training callbacks
         config: Full configuration dictionary
     """
-    print(f"\n🚀 Starting enhanced training...")
-    print(f"📁 Output directory: {run_output_dir}")
-    print(f"📊 Logs: {os.path.join(run_output_dir, 'logs')}")
-    print(f"💾 Checkpoints: {os.path.join(run_output_dir, 'checkpoints')}")
+    print(f"\n[START] Starting enhanced training...")
+    print(f"[OUTPUT] Output directory: {run_output_dir}")
+    print(f"[LOGS] Logs: {os.path.join(run_output_dir, 'logs')}")
+    print(f"[CHECKPOINTS] Checkpoints: {os.path.join(run_output_dir, 'checkpoints')}")
     
     # Setup EMA if enabled
     ema_model = None
@@ -281,12 +305,12 @@ def run_enhanced_training(trainer, model, train_loader, val_loader, test_loader,
     if regularization_config.get('use_ema', False):
         ema_decay = regularization_config.get('ema_decay', 0.999)
         ema_model = ModelEMA(model, decay=ema_decay)
-        print(f"🔄 EMA enabled with decay: {ema_decay}")
+        print(f"[EMA] EMA enabled with decay: {ema_decay}")
     
     # Setup MixUp if enabled
     mixup = create_mixup_augmentation(config)
     if mixup:
-        print(f"🌀 MixUp enabled with alpha: {config.get('advanced', {}).get('mixup_alpha', 0.2)}")
+        print(f"[MIXUP] MixUp enabled with alpha: {config.get('advanced', {}).get('mixup_alpha', 0.2)}")
     
     try:
         # Start enhanced training
@@ -294,22 +318,25 @@ def run_enhanced_training(trainer, model, train_loader, val_loader, test_loader,
             
         # Apply EMA if used
         if ema_model:
-            print("🔄 Applying EMA weights for final evaluation...")
+            print("[EMA] Applying EMA weights for final evaluation...")
             ema_model.apply_shadow(model)
             
         # Create training summary
         visualizer.create_training_summary(trainer, model)
         
         # Generate final validation scatter plots
-        print("📊 Generating final validation scatter plots...")
+        print("[VALIDATION] Generating final validation scatter plots...")
         model.generate_final_validation_plots(output_dir=run_output_dir)
         
         # Create final validation summary
         visualizer.create_final_validation_summary(run_output_dir)
     
-        # Test model
-        print("🧪 Testing enhanced model...")
-        trainer.test(model, test_loader)
+        # Test model only if test loader exists
+        if test_loader:
+            print("[TEST] Testing enhanced model...")
+            trainer.test(model, test_loader)
+        else:
+            print("[TEST] Skipping test phase (no test set)")
     
         # Save final model state
         final_model_path = os.path.join(run_output_dir, "final_model.ckpt")
@@ -319,16 +346,16 @@ def run_enhanced_training(trainer, model, train_loader, val_loader, test_loader,
         if ema_model:
             ema_model_path = os.path.join(run_output_dir, "final_ema_model.ckpt")
             torch.save(ema_model.state_dict(), ema_model_path)
-            print(f"💾 EMA model saved: {ema_model_path}")
+            print(f"[SAVE] EMA model saved: {ema_model_path}")
         
-        print(f"\n🎉 Enhanced training completed successfully!")
-        print(f"📁 Results saved to: {run_output_dir}")
-        print(f"📈 View training logs: tensorboard --logdir {os.path.join(run_output_dir, 'logs')}")
-        print(f"🏆 Best model checkpoint: {callbacks[0].best_model_path}")
-        print(f"📊 Final validation plots: {os.path.join(run_output_dir, 'final_validation_plots')}")
+        print(f"\n[SUCCESS] Enhanced training completed successfully!")
+        print(f"[RESULTS] Results saved to: {run_output_dir}")
+        print(f"[TENSORBOARD] View training logs: tensorboard --logdir {os.path.join(run_output_dir, 'logs')}")
+        print(f"[CHECKPOINT] Best model checkpoint: {callbacks[0].best_model_path}")
+        print(f"[PLOTS] Final validation plots: {os.path.join(run_output_dir, 'final_validation_plots')}")
         
     except Exception as e:
-        print(f"❌ Enhanced training failed: {e}")
+        print(f"[ERROR] Enhanced training failed: {e}")
         raise
 
 
@@ -344,7 +371,7 @@ def main(args):
     model_config = get_model_config(config)
     train_config = get_train_config(config)
     
-    print(f"🔧 Using configuration: {args.config or 'default'}")
+    print(f"[CONFIG] Using configuration: {args.config or 'default'}")
     
     # Create output directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -403,6 +430,9 @@ if __name__ == "__main__":
     
     # Resume training
     parser.add_argument("--resume_from_checkpoint", type=str, help="Path to checkpoint to resume training from")
+    
+    # Custom split arguments
+    parser.add_argument("--custom_split_no_test", action="store_true", help="Use custom split: patients 1-5 as validation, rest as training, no test set")
     
     args = parser.parse_args()
     

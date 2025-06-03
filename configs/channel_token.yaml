@@ -31,7 +31,7 @@ training:
   # Training schedule
   max_epochs: 50                  # Reduced epochs for testing
   early_stop_patience: 10         # Reduced patience
-  check_val_every_n_epoch: 2      # Less frequent validation
+  check_val_every_n_epoch: 1      # Less frequent validation
   
   # Optimization settings
   gradient_clip_val: 0.5          # REDUCED gradient clipping

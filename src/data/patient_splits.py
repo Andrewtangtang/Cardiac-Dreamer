@@ -169,4 +169,82 @@ def _smart_patient_split(patient_dirs: List[str], patient_sample_counts: Dict[st
     print(f"Smart splitting achieved:")
     print(f"  Target vs Actual: Train {target_train:.0f} vs {train_samples}, Val {target_val:.0f} vs {val_samples}, Test {target_test:.0f} vs {test_samples}")
     
+    return train_patients, val_patients, test_patients
+
+
+def get_custom_patient_splits_no_test(data_dir: str) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Custom patient splitting: patients 1-5 as validation, rest as training, no test set
+    
+    Args:
+        data_dir: Root data directory
+        
+    Returns:
+        Tuple of (train_patients, val_patients, test_patients)
+        Note: test_patients will be empty list
+    """
+    # Find all patient directories
+    patient_dirs = []
+    patient_sample_counts = {}
+    
+    for item in os.listdir(data_dir):
+        patient_path = os.path.join(data_dir, item)
+        if os.path.isdir(patient_path) and item.startswith("data_"):
+            # Check if it contains the required JSON file
+            json_file = os.path.join(patient_path, "transitions_dataset.json")
+            if os.path.exists(json_file):
+                patient_dirs.append(item)
+                
+                # Count samples for this patient
+                try:
+                    with open(json_file, 'r') as f:
+                        transitions = json.load(f)
+                    patient_sample_counts[item] = len(transitions)
+                except:
+                    patient_sample_counts[item] = 0
+    
+    if not patient_dirs:
+        raise ValueError(f"No valid patient directories found in {data_dir}")
+    
+    print(f"Found {len(patient_dirs)} patient directories")
+    
+    # Sort patients to ensure consistent ordering
+    patient_dirs.sort()
+    
+    # Create splits: patients 1-5 as validation
+    val_patients = []
+    train_patients = []
+    test_patients = []  # Empty test set
+    
+    for patient in patient_dirs:
+        # Extract patient number from name (e.g., "data_0513_01" -> 1)
+        try:
+            patient_num = int(patient.split('_')[-1])
+            if 1 <= patient_num <= 5:
+                val_patients.append(patient)
+            else:
+                train_patients.append(patient)
+        except:
+            # If we can't parse the number, put in training
+            train_patients.append(patient)
+    
+    # Sort for consistency
+    train_patients.sort()
+    val_patients.sort()
+    
+    print(f"\nCustom patient splits (no test set):")
+    print(f"  Train patients ({len(train_patients)}): {train_patients}")
+    print(f"  Val patients ({len(val_patients)}): {val_patients}")
+    print(f"  Test patients: None")
+    
+    # Print sample distribution
+    train_samples = sum(patient_sample_counts.get(p, 0) for p in train_patients)
+    val_samples = sum(patient_sample_counts.get(p, 0) for p in val_patients)
+    total_samples = train_samples + val_samples
+    
+    print(f"\nSample distribution:")
+    print(f"  Train: {train_samples} samples ({train_samples/total_samples:.1%})")
+    print(f"  Val: {val_samples} samples ({val_samples/total_samples:.1%})")
+    print(f"  Total: {total_samples} samples")
+    
     return train_patients, val_patients, test_patients 

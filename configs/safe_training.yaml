@@ -26,12 +26,12 @@ model:
 training:
   # Data loading parameters - REDUCED FOR SAFETY
   batch_size: 4                   # VERY SMALL batch size to prevent OOM
-  num_workers: 2                  # REDUCED workers to save CPU/RAM
+  num_workers: 4                  # REDUCED workers to save CPU/RAM
   
   # Training schedule
-  max_epochs: 50                  # Reduced epochs for testing
-  early_stop_patience: 10         # Reduced patience
-  check_val_every_n_epoch: 2      # Less frequent validation
+  max_epochs: 80                  # Reduced epochs for testing
+  early_stop_patience: 15         # Reduced patience
+  check_val_every_n_epoch: 1      # Less frequent validation
   
   # Optimization settings
   gradient_clip_val: 0.5          # REDUCED gradient clipping
