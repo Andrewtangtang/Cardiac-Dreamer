@@ -1,74 +1,83 @@
-# Safe Training Configuration - Prevents System Crashes
-# Reduced resource usage for stable training
+# AGGRESSIVE Training Configuration - OVERFIT TO TRAINING SET FOR DEMO
+# Maximum performance on training data with reasonable training time
 
 model:
-  # Model architecture parameters
-  token_type: "channel"             # Using channel tokens (more efficient)
-  d_model: 512                    # REDUCED from 768 to save memory
-  num_heads: 8                    # REDUCED from 12 to save memory
-  num_layers: 4                   # REDUCED from 6 to save memory
+  # Model architecture parameters - INCREASED FOR BETTER FITTING
+  token_type: "channel"             # Using channel tokens
+  d_model: 768                    # INCREASED for more capacity
+  num_heads: 12                   # INCREASED for more capacity  
+  num_layers: 6                   # INCREASED but reasonable
   feature_dim: 49                 # Spatial feature dimension (7x7=49)
   in_channels: 1                  # Input image channels (grayscale)
   use_pretrained: true            # Use ImageNet pretrained ResNet34
   
-  # Optimization parameters
-  lr: 5e-5                        # REDUCED learning rate for stability
-  weight_decay: 1e-5              # Balanced weight decay
+  # Backbone freezing configuration
+  freeze_backbone_layers: 0       # No freezing - full fine-tuning
+  
+  # Optimization parameters - AGGRESSIVE FOR FAST FITTING
+  lr: 1e-4                        # HIGHER learning rate for fast convergence
+  weight_decay: 1e-6              # REDUCED weight decay to allow overfitting
   
   # Loss function parameters
   lambda_t2_action: 1.0           # Equal weighting for at1 and at2
   smooth_l1_beta: 1.0             # Standard beta
-  primary_task_only: false        # Use both at1 and at2 losses
+  primary_task_only: false        # Use both losses for better fitting
   
   # Advanced settings
-  use_flash_attn: false           # Disable flash attention for stability
+  use_flash_attn: true            # Enable for performance
 
 training:
-  # Data loading parameters - REDUCED FOR SAFETY
-  batch_size: 16                   # VERY SMALL batch size to prevent OOM
-  num_workers: 2                  # REDUCED workers to save CPU/RAM
+  # Data loading parameters
+  batch_size: 32                  # LARGER batch size for stable gradients
+  num_workers: 4                  # MORE workers for faster data loading
   
-  # Training schedule
-  max_epochs: 50                  # Reduced epochs for testing
-  early_stop_patience: 10         # Reduced patience
-  check_val_every_n_epoch: 1      # Less frequent validation
+  # Training schedule - REASONABLE TIME BUT ENOUGH TO OVERFIT
+  max_epochs: 200                 # REASONABLE epochs - should be enough to overfit
+  early_stop_patience: 999        # DISABLE early stopping - let it overfit!
+  check_val_every_n_epoch: 5      # Monitor validation every 5 epochs
   
   # Optimization settings
-  gradient_clip_val: 0.5          # REDUCED gradient clipping
-  accumulate_grad_batches: 4      # ACCUMULATE gradients to simulate larger batch
-  log_every_n_steps: 50           # Less frequent logging
+  gradient_clip_val: 1.0          # RELAXED gradient clipping
+  accumulate_grad_batches: 2      # REDUCED accumulation for faster updates
+  log_every_n_steps: 25           # MORE frequent logging to see progress
   
   # Hardware settings
   accelerator: "auto"             # Hardware accelerator
-  precision: 32                  # MIXED PRECISION to save memory
-  
+  precision: "32-true"            # Full precision for maximum accuracy
+
 # Data configuration
 data:
-  # Use only data_0513_01 since it's the only one with images
-  train_ratio: 0.7                # 70% for training
-  val_ratio: 0.15                 # 15% for validation  
-  test_ratio: 0.15                # 15% for testing
+  # Use more training data
+  train_ratio: 0.85               # MORE data for training
+  val_ratio: 0.15                 # MINIMAL validation just for monitoring
+  test_ratio: 0.0                 # NO test set - all data for training
   
-  # Data augmentation - DISABLED for stability
+  # Data augmentation - DISABLED to overfit exact training samples
   augmentation:
-    enabled: false                # DISABLE augmentation to save memory
-    rotation_range: 0             # No augmentation
-    brightness_range: 0           # No augmentation
-    contrast_range: 0             # No augmentation
+    enabled: false                # NO augmentation - fit exact samples
+
+# Advanced scheduler for aggressive fitting
+advanced:
+  scheduler:
+    type: "onecycle"              # OneCycle for fast initial convergence
+    max_lr: 2e-4                  # HIGH max learning rate
+    div_factor: 10                # Start with lr/10
+    final_div_factor: 1000        # End with very low lr for fine-tuning
+    pct_start: 0.1                # Quick ramp up, long fine-tuning
 
 # Experiment tracking
 experiment:
   # Weights & Biases
   use_wandb: true                 # Keep WandB for monitoring
-  wandb_project: "cardiac-dreamer-safe"
+  wandb_project: "cardiac-dreamer-demo"
   wandb_entity: null
   
   # Tags for experiment organization
   tags:
-    - "safe_training"             # Safe configuration
+    - "overfit_demo"              # Demo configuration
     - "channel_tokens"            # Using channel tokens
-    - "reduced_resources"         # Reduced resource usage
-    - "crash_prevention"          # Prevent system crashes
+    - "aggressive_training"       # Aggressive setup
+    - "training_set_optimization" # Focus on training performance
     
   # Notes
-  description: "Safe training configuration to prevent system crashes - reduced model size and batch size" 
+  description: "Aggressive configuration for demo - designed to achieve great training set performance in reasonable time" 

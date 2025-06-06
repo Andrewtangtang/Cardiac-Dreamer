@@ -128,6 +128,13 @@ class CrossPatientTransitionsDataset(Dataset):
         """Compute normalization statistics for 6DOF actions"""
         print("Computing normalization statistics for 6DOF actions...")
         
+        # 
+        if len(self.transitions) == 0:
+            print(" No valid transitions found! Using default normalization values.")
+            self.action_mean = np.array([0.0] * 6)
+            self.action_std = np.array([1.0] * 6)
+            return
+        
         at1_actions = []
         at2_actions = []
         action_changes = []
@@ -142,11 +149,17 @@ class CrossPatientTransitionsDataset(Dataset):
         at2_actions = np.array(at2_actions)
         action_changes = np.array(action_changes)
         
-        # 🎯 統一處理所有動作向量：將三種類型的動作向量合併
-        # 這樣可以確保所有動作向量使用相同的統計量進行正規化
+        # 
         all_actions = np.vstack([at1_actions, at2_actions, action_changes])
         
-        # 對每個維度分別計算統計量
+        # 
+        if all_actions.size == 0:
+            print(" No valid action data found! Using default normalization values.")
+            self.action_mean = np.array([0.0] * 6)
+            self.action_std = np.array([1.0] * 6)
+            return
+        
+        # 
         self.action_mean = np.mean(all_actions, axis=0)
         self.action_std = np.std(all_actions, axis=0)
         
@@ -159,7 +172,7 @@ class CrossPatientTransitionsDataset(Dataset):
         print(f"  Mean per dimension: {self.action_mean}")
         print(f"  Std per dimension: {self.action_std}")
         
-        # 顯示各維度的詳細統計
+        # 
         dimension_names = ['X (mm)', 'Y (mm)', 'Z (mm)', 'Roll (rad)', 'Pitch (rad)', 'Yaw (rad)']
         print(f"\n📊 Detailed statistics per dimension:")
         for i, name in enumerate(dimension_names):
@@ -203,15 +216,23 @@ class CrossPatientTransitionsDataset(Dataset):
             
             # Add patient_id and full paths to each transition
             for transition in patient_transitions:
+                # Convert Windows-style paths to Unix-style paths
+                ft1_image_path = transition["ft1_image_path"].replace('\\', '/')
+                ft2_image_path = transition["ft2_image_path"].replace('\\', '/')
+                
                 # Convert relative paths to absolute paths
-                ft1_path = os.path.join(patient_dir, transition["ft1_image_path"])
-                ft2_path = os.path.join(patient_dir, transition["ft2_image_path"])
+                ft1_path = os.path.join(patient_dir, ft1_image_path)
+                ft2_path = os.path.join(patient_dir, ft2_image_path)
                 
                 # Verify files exist
                 if not os.path.exists(ft1_path):
                     print(f"Warning: Image file not found: {ft1_path}")
                     continue
                     
+                if not os.path.exists(ft2_path):
+                    print(f"Warning: Image file not found: {ft2_path}")
+                    continue
+                
                 # Create complete transition record
                 complete_transition = {
                     "patient_id": patient_id,

@@ -18,8 +18,10 @@ class ResNet34Backbone(nn.Module):
     Args:
         in_channels (int): Number of input channels, typically 1 for grayscale ultrasound images
         pretrained (bool): Whether to use pretrained weights
+        freeze_layers (int): Number of layers to freeze (0: no freezing, 1: conv1+bn1, 
+                           2: +layer1, 3: +layer2, 4: +layer3, 5: all layers frozen)
     """
-    def __init__(self, in_channels: int = 1, pretrained: bool = True):
+    def __init__(self, in_channels: int = 1, pretrained: bool = True, freeze_layers: int = 0):
         super().__init__()
         
         # First load pretrained ResNet34 model
@@ -65,6 +67,55 @@ class ResNet34Backbone(nn.Module):
             resnet.layer4
         )
         
+        # Apply layer freezing if specified
+        self.freeze_layers = freeze_layers
+        self._freeze_layers()
+        
+    def _freeze_layers(self):
+        """凍結指定數量的層參數"""
+        if self.freeze_layers <= 0:
+            print("No layers frozen - all parameters trainable")
+            return
+            
+        # Define layer groups for freezing
+        layer_groups = [
+            [self.features[0], self.features[1]],  # conv1, bn1 (index 0-1)
+            [self.features[4]],                     # layer1 (index 4)
+            [self.features[5]],                     # layer2 (index 5) 
+            [self.features[6]],                     # layer3 (index 6)
+            [self.features[7]]                      # layer4 (index 7)
+        ]
+        
+        frozen_layers_info = []
+        
+        # Freeze layers according to freeze_layers parameter
+        for i in range(min(self.freeze_layers, len(layer_groups))):
+            for layer in layer_groups[i]:
+                for param in layer.parameters():
+                    param.requires_grad = False
+            
+            if i == 0:
+                frozen_layers_info.append("conv1+bn1")
+            else:
+                frozen_layers_info.append(f"layer{i}")
+        
+        print(f"Frozen {self.freeze_layers} layer group(s): {', '.join(frozen_layers_info)}")
+        
+        # Count trainable vs frozen parameters
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        frozen_params = total_params - trainable_params
+        
+        print(f"  Total parameters: {total_params:,}")
+        print(f"  Trainable parameters: {trainable_params:,} ({trainable_params/total_params*100:.1f}%)")
+        print(f"  Frozen parameters: {frozen_params:,} ({frozen_params/total_params*100:.1f}%)")
+    
+    def unfreeze_all_layers(self):
+        """解凍所有層參數 - 用於需要完全微調時"""
+        for param in self.parameters():
+            param.requires_grad = True
+        print("All layers unfrozen - all parameters now trainable")
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass
         
@@ -78,17 +129,19 @@ class ResNet34Backbone(nn.Module):
         return self.features(x)
 
 
-def get_resnet34_encoder(in_channels: int = 1, pretrained: bool = True) -> ResNet34Backbone:
+def get_resnet34_encoder(in_channels: int = 1, pretrained: bool = True, freeze_layers: int = 0) -> ResNet34Backbone:
     """Create ResNet34 feature encoder
     
     Args:
         in_channels (int): Number of input channels, typically 1 for grayscale ultrasound images
         pretrained (bool): Whether to use pretrained weights
+        freeze_layers (int): Number of layers to freeze (0: no freezing, 1: conv1+bn1, 
+                           2: +layer1, 3: +layer2, 4: +layer3, 5: all layers frozen)
     
     Returns:
         ResNet34Backbone: ResNet34 feature extractor
     """
-    return ResNet34Backbone(in_channels=in_channels, pretrained=pretrained)
+    return ResNet34Backbone(in_channels=in_channels, pretrained=pretrained, freeze_layers=freeze_layers)
 
 
 if __name__ == "__main__":

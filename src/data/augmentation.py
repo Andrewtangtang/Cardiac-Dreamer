@@ -9,6 +9,7 @@ import torchvision.transforms.functional as TF
 import numpy as np
 from PIL import Image
 import random
+from typing import Union, List
 
 
 class CardiacAugmentation:
@@ -17,8 +18,8 @@ class CardiacAugmentation:
     
     Args:
         rotation_range: Maximum rotation in degrees (±rotation_range)
-        brightness_range: Brightness variation range (±brightness_range)
-        contrast_range: Contrast variation range (±contrast_range)  
+        brightness_range: Brightness variation. If float, range is [1-val, 1+val]. If List[float, float], range is [min, max].
+        contrast_range: Contrast variation. If float, range is [1-val, 1+val]. If List[float, float], range is [min, max].
         noise_std: Standard deviation of Gaussian noise to add
         enabled: Whether augmentation is enabled
     """
@@ -26,8 +27,8 @@ class CardiacAugmentation:
     def __init__(
         self,
         rotation_range: float = 5.0,
-        brightness_range: float = 0.1,
-        contrast_range: float = 0.1,
+        brightness_range: Union[float, List[float]] = 0.1,
+        contrast_range: Union[float, List[float]] = 0.1,
         noise_std: float = 0.01,
         enabled: bool = True
     ):
@@ -46,10 +47,26 @@ class CardiacAugmentation:
         if self.rotation_range > 0:
             image = self._apply_rotation(image)
             
-        if self.brightness_range > 0:
-            image = self._apply_brightness(image)
+        # Check for brightness adjustment
+        apply_brightness = False
+        if isinstance(self.brightness_range, float) and self.brightness_range > 0:
+            apply_brightness = True
+        elif isinstance(self.brightness_range, (list, tuple)) and len(self.brightness_range) == 2:
+            # Consider it active if it's a list/tuple of 2, even if it's [1.0, 1.0]
+            # The _apply_brightness method will handle the actual factor generation
+            apply_brightness = True 
             
-        if self.contrast_range > 0:
+        if apply_brightness:
+            image = self._apply_brightness(image)
+
+        # Check for contrast adjustment
+        apply_contrast = False
+        if isinstance(self.contrast_range, float) and self.contrast_range > 0:
+            apply_contrast = True
+        elif isinstance(self.contrast_range, (list, tuple)) and len(self.contrast_range) == 2:
+            apply_contrast = True
+
+        if apply_contrast:
             image = self._apply_contrast(image)
             
         if self.noise_std > 0:
@@ -67,8 +84,14 @@ class CardiacAugmentation:
     
     def _apply_brightness(self, image):
         """Apply random brightness adjustment"""
-        factor = 1.0 + random.uniform(-self.brightness_range, self.brightness_range)
-        factor = max(0.1, factor)  # Prevent negative brightness
+        if isinstance(self.brightness_range, float):
+            factor = 1.0 + random.uniform(-self.brightness_range, self.brightness_range)
+        elif isinstance(self.brightness_range, (list, tuple)) and len(self.brightness_range) == 2:
+            factor = random.uniform(self.brightness_range[0], self.brightness_range[1])
+        else: # Should not happen if checks in __call__ are correct
+            return image 
+        
+        factor = max(0.1, factor)  # Prevent too dark images
         
         if isinstance(image, Image.Image):
             return TF.adjust_brightness(image, factor)
@@ -77,8 +100,14 @@ class CardiacAugmentation:
     
     def _apply_contrast(self, image):
         """Apply random contrast adjustment"""
-        factor = 1.0 + random.uniform(-self.contrast_range, self.contrast_range)
-        factor = max(0.1, factor)  # Prevent negative contrast
+        if isinstance(self.contrast_range, float):
+            factor = 1.0 + random.uniform(-self.contrast_range, self.contrast_range)
+        elif isinstance(self.contrast_range, (list, tuple)) and len(self.contrast_range) == 2:
+            factor = random.uniform(self.contrast_range[0], self.contrast_range[1])
+        else: # Should not happen
+            return image
+
+        factor = max(0.1, factor)  # Prevent too low contrast
         
         if isinstance(image, Image.Image):
             return TF.adjust_contrast(image, factor)

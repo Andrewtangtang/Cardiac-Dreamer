@@ -108,6 +108,7 @@ class DreamerPatch(nn.Module):
     Dreamer Patch-Token Model
     
     Uses 49 patch tokens + 1 action token in a transformer encoder
+    Main task: Predict next frame features (not reconstruction)
     Each patch token represents a spatial location with full 512-dim features
     
     Args:
@@ -170,28 +171,24 @@ class DreamerPatch(nn.Module):
             except ImportError:
                 print("Warning: flash_attn package not found. Using standard attention mechanism.")
         
-        # Projection for patch token reconstruction
-        self.output_projection = nn.Linear(d_model, in_channels)
-        
-        # New: Projection for next frame feature prediction
+        # Main task: Projection for next frame feature prediction
         self.next_frame_projection = nn.Linear(d_model, in_channels)
         
     def forward(
         self, 
         feature_map: torch.Tensor, 
         action: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass
+        Forward pass - Main task: Predict next frame features
 
         Args:
             feature_map: Feature map from ResNet [batch_size, 512, 7, 7]
             action: 6-DOF action [batch_size, 6]
             
         Returns:
-            transformed_patch_tokens: Transformed patch tokens [batch_size, 49, 512]
-            full_sequence: Full sequence of transformed tokens [batch_size, 50, d_model]
             predicted_next_features: Predicted next frame features [batch_size, 49, 512]
+            full_sequence: Full sequence of transformed tokens [batch_size, 50, d_model]
         """
         batch_size = feature_map.shape[0]
         
@@ -222,19 +219,12 @@ class DreamerPatch(nn.Module):
         transformed_action_token = transformed_sequence[:, 0:1, :]
         transformed_patch_tokens = transformed_sequence[:, 1:, :]
         
-        # Project patch tokens back to feature dimension
+        # Main task: Use patch tokens to predict next frame features
+        # This is the core functionality - predicting next frame from current + action
         # [B, 49, d_model] -> [B, 49, 512]
-        reconstructed_patch_tokens = self.output_projection(transformed_patch_tokens)
+        predicted_next_features = self.next_frame_projection(transformed_patch_tokens)
         
-        # New: Project action token to predict next frame features
-        # [B, 1, d_model] -> [B, 1, 512]
-        next_frame_features = self.next_frame_projection(transformed_action_token)
-        
-        # Expand to match patch dimensions
-        # [B, 1, 512] -> [B, 49, 512]
-        predicted_next_features = next_frame_features.expand(-1, 49, -1)
-        
-        return reconstructed_patch_tokens, transformed_sequence, predicted_next_features
+        return predicted_next_features, transformed_sequence
 
 
 def get_dreamer_patch(
@@ -323,34 +313,25 @@ if __name__ == "__main__":
         print(f"  Feature map: {feature_map.shape}")
         
         # Forward pass through DreamerPatch
-        reconstructed_patches, full_sequence, predicted_next_features = dreamer(feature_map, action)
+        predicted_next_features, full_sequence = dreamer(feature_map, action)
         
         print(f"\nOutput shapes:")
-        print(f"  Reconstructed patches: {reconstructed_patches.shape}")
-        print(f"  Full sequence: {full_sequence.shape}")
         print(f"  Predicted next features: {predicted_next_features.shape}")
+        print(f"  Full sequence: {full_sequence.shape}")
         
         # Check that the shapes are as expected
-        assert reconstructed_patches.shape == (batch_size, 49, 512), \
-            f"Expected reconstructed_patches shape {(batch_size, 49, 512)}, got {reconstructed_patches.shape}"
-        
-        assert full_sequence.shape == (batch_size, 50, 768), \
-            f"Expected full_sequence shape {(batch_size, 50, 768)}, got {full_sequence.shape}"
-            
         assert predicted_next_features.shape == (batch_size, 49, 512), \
             f"Expected predicted_next_features shape {(batch_size, 49, 512)}, got {predicted_next_features.shape}"
         
-        # Test pooling on both current and next features
-        pooled_current = pool_patch_features(reconstructed_patches)
+        assert full_sequence.shape == (batch_size, 50, 768), \
+            f"Expected full_sequence shape {(batch_size, 50, 768)}, got {full_sequence.shape}"
+        
+        # Test pooling on predicted next features
         pooled_next = pool_patch_features(predicted_next_features)
         
         print(f"\nPooled feature shapes:")
-        print(f"  Pooled current features: {pooled_current.shape}")
         print(f"  Pooled next features: {pooled_next.shape}")
         
-        assert pooled_current.shape == (batch_size, 512), \
-            f"Expected pooled_current shape {(batch_size, 512)}, got {pooled_current.shape}"
-            
         assert pooled_next.shape == (batch_size, 512), \
             f"Expected pooled_next shape {(batch_size, 512)}, got {pooled_next.shape}"
         

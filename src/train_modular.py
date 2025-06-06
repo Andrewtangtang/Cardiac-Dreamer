@@ -173,6 +173,13 @@ def create_enhanced_model(model_config, config):
     """
     print("Creating enhanced model with regularization...")
     
+    # Extract scheduler configuration from config
+    scheduler_config = config.get('advanced', {}).get('scheduler', {})
+    scheduler_type = scheduler_config.get('type', 'cosine')
+    
+    # Remove 'type' from scheduler_config before passing to model
+    scheduler_params = {k: v for k, v in scheduler_config.items() if k != 'type'}
+    
     # Create base model
     model = get_cardiac_dreamer_system(
         token_type=model_config["token_type"],
@@ -185,13 +192,29 @@ def create_enhanced_model(model_config, config):
         lambda_t2_action=model_config["lambda_t2_action"],
         smooth_l1_beta=model_config["smooth_l1_beta"],
         use_flash_attn=model_config["use_flash_attn"],
-        primary_task_only=model_config["primary_task_only"]
+        primary_task_only=model_config["primary_task_only"],
+        freeze_backbone_layers=model_config.get("freeze_backbone_layers", 0),
+        scheduler_type=scheduler_type,    # NEW: pass scheduler type
+        scheduler_config=scheduler_params  # NEW: pass scheduler parameters
     )
     
     # Print model info
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model created with {total_params:,} total parameters ({trainable_params:,} trainable)")
+    
+    # Print freeze info if enabled
+    freeze_layers = model_config.get("freeze_backbone_layers", 0)
+    if freeze_layers > 0:
+        frozen_params = total_params - trainable_params
+        print(f"🧊 BACKBONE FREEZING: {freeze_layers} layer group(s) frozen")
+        print(f"   Frozen parameters: {frozen_params:,} ({frozen_params/total_params*100:.1f}%)")
+        print(f"   Trainable parameters: {trainable_params:,} ({trainable_params/total_params*100:.1f}%)")
+    
+    # Print scheduler info
+    if scheduler_type != "cosine":
+        print(f"📈 ADVANCED SCHEDULER: Using {scheduler_type}")
+        print(f"   Configuration: {scheduler_params}")
     
     # Print regularization info
     regularization_config = config.get('regularization', {})

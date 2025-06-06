@@ -74,3 +74,37 @@ tensorboard/
 ## data
 data/processed/
 dataset_analysis/
+
+# 配置和輸出資料夾
+configs/
+outputs/
+model_evaluation_results_last/
+
+# 預測結果資料夾 (新增)
+output/
+**/patient_predictions/
+*_at1_predictions.csv
+at1_predictions_demo.csv
+
+# 暫存檔案
+*.tmp
+*.temp
+temp/
+tmp/
+
+# 大型資料檔案
+*.csv
+*.json
+!**/config.json
+!**/metadata.json
+
+# 快取和暫存
+.cache/
+cache/ 
+
+
+
+
+
+
+
