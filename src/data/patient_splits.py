@@ -247,4 +247,15 @@ def get_custom_patient_splits_no_test(data_dir: str) -> Tuple[List[str], List[st
     print(f"  Val: {val_samples} samples ({val_samples/total_samples:.1%})")
     print(f"  Total: {total_samples} samples")
     
-    return train_patients, val_patients, test_patients 
+    return train_patients, val_patients, test_patients
+
+
+def get_patient_groups():
+    """Define the 5 patient groups for cross-validation"""
+    return {
+        'patient1': ['data_0513_01', 'data_0513_02', 'data_0513_03', 'data_0513_04', 'data_0513_05'],
+        'patient2': ['data_0513_06', 'data_0513_07', 'data_0513_08', 'data_0513_09'],
+        'patient3': ['data_0513_11', 'data_0513_12', 'data_0513_13', 'data_0513_14'],
+        'patient4': ['data_0513_16', 'data_0513_17', 'data_0513_18', 'data_0513_19', 'data_0513_20','data_0513_21'],
+        'patient5': ['data_0513_22', 'data_0513_23', 'data_0513_24', 'data_0513_25', 'data_0513_26']
+    } 

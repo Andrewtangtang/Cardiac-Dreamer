@@ -1,548 +1,332 @@
 #!/usr/bin/env python
 """
-Comprehensive Model Evaluation Script
-Combines automatic checkpoint detection with detailed model evaluation
-Supports both training and validation dataset evaluation
-Usage: python model_evaluation.py [--use_custom_split] [--split SPLIT] [--auto_find_best] [--run_dir RUN_DIR]
+Model Evaluation Module for Cardiac Dreamer
+
+This module provides evaluation utilities for cross-validation MAE extraction,
+including model loading, prediction generation, and metrics calculation.
 """
 
 import os
-import sys
-import argparse
-import glob
 import torch
+import torch.nn.functional as F
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 from sklearn.metrics import r2_score
-import json
-from datetime import datetime
-import pandas as pd
-
-# Add project root to path
-current_file_dir = os.path.dirname(os.path.abspath(__file__))
-if current_file_dir not in sys.path:
-    sys.path.insert(0, current_file_dir)
-
-# Import model and dataset
-from src.models.system import get_cardiac_dreamer_system
-from src.data import CrossPatientTransitionsDataset, get_patient_splits, get_custom_patient_splits_no_test
-
-
-def find_best_checkpoint(run_dir: str):
-    """Find the best checkpoint from a training run directory"""
-    checkpoints_dir = os.path.join(run_dir, "checkpoints")
-    
-    if not os.path.exists(checkpoints_dir):
-        print(f"[ERROR] Checkpoints directory not found: {checkpoints_dir}")
-        return None
-    
-    # Find all checkpoint files
-    checkpoint_files = glob.glob(os.path.join(checkpoints_dir, "cardiac_dreamer-epoch=*-val_main_task_loss=*.ckpt"))
-    
-    if not checkpoint_files:
-        print(f"[ERROR] No checkpoint files found in: {checkpoints_dir}")
-        return None
-    
-    # Sort by validation loss (lower is better)
-    def extract_val_loss(filename):
-        try:
-            # Extract validation loss from filename
-            parts = os.path.basename(filename).split('-')
-            for part in parts:
-                if part.startswith('val_main_task_loss='):
-                    return float(part.split('=')[1].replace('.ckpt', ''))
-        except:
-            return float('inf')
-        return float('inf')
-    
-    # Sort and select the best
-    checkpoint_files.sort(key=extract_val_loss)
-    best_checkpoint = checkpoint_files[0]
-    
-    print(f"[SUCCESS] Found best checkpoint: {best_checkpoint}")
-    print(f"[INFO] Validation loss: {extract_val_loss(best_checkpoint):.4f}")
-    
-    return best_checkpoint
+from scipy.stats import pearsonr
+import warnings
+from typing import Tuple, Dict, Any
+from torch.utils.data import DataLoader
 
 
 def load_model_from_checkpoint(checkpoint_path: str):
-    """Load trained model from checkpoint"""
-    print(f"Loading model from: {checkpoint_path}")
+    """
+    Load CardiacDreamerSystem model from checkpoint
     
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
-    # Try to get hyperparameters from checkpoint
-    if 'hyper_parameters' in checkpoint:
-        hparams = checkpoint['hyper_parameters']
-        print(f"Found hyperparameters in checkpoint: {list(hparams.keys())}")
+    Args:
+        checkpoint_path: Path to the checkpoint file
         
-        # Use configuration from checkpoint
-        model = get_cardiac_dreamer_system(
-            token_type=hparams.get("token_type", "channel"),
-            d_model=hparams.get("d_model", 768),
-            nhead=hparams.get("nhead", 12),
-            num_layers=hparams.get("num_layers", 6),
-            feature_dim=hparams.get("feature_dim", 49),
-            lr=hparams.get("lr", 1e-4),
-            weight_decay=hparams.get("weight_decay", 1e-5),
-            lambda_t2_action=hparams.get("lambda_t2_action", 1.0),
-            smooth_l1_beta=hparams.get("smooth_l1_beta", 1.0),
-            use_flash_attn=hparams.get("use_flash_attn", False),
-            primary_task_only=hparams.get("primary_task_only", False)
-        )
-    else:
-        print("Warning: No hyperparameters found in checkpoint, using default configuration")
-        # Use default configuration
-        model = get_cardiac_dreamer_system(
-            token_type="channel",
-            d_model=768,
-            nhead=12,
-            num_layers=6,
-            feature_dim=49,
-            lr=1e-4,
-            weight_decay=1e-5,
-            lambda_t2_action=1.0,
-            smooth_l1_beta=1.0,
-            use_flash_attn=False,
-            primary_task_only=False
-        )
-    
-    # Load model weights
+    Returns:
+        Loaded model in evaluation mode
+    """
     try:
-        model.load_state_dict(checkpoint['state_dict'])
-        print("Model loaded successfully!")
+        print(f"Loading model from checkpoint: {os.path.basename(checkpoint_path)}")
+        
+        # Import here to avoid circular imports
+        from src.models.system import CardiacDreamerSystem
+        
+        # Load model from checkpoint
+        model = CardiacDreamerSystem.load_from_checkpoint(
+            checkpoint_path,
+            map_location='cpu',  # Load to CPU first, then move to device
+            strict=False
+        )
+        
+        # Set to evaluation mode
+        model.eval()
+        
+        print(f"Model loaded successfully: {type(model).__name__}")
+        return model
+        
     except Exception as e:
-        print(f"Error loading model state dict: {e}")
-        print("Trying to load with strict=False...")
-        model.load_state_dict(checkpoint['state_dict'], strict=False)
-        print("Model loaded with some missing/unexpected keys")
-    
-    model.eval()
-    return model
+        print(f"Error loading model from {checkpoint_path}: {e}")
+        raise
 
 
-def create_dataset(data_dir: str = "data/processed", split: str = "val", use_custom_split: bool = False):
-    """Create specified dataset"""
-    print(f"Creating {split} dataset from: {data_dir}")
+def generate_predictions(model, data_loader: DataLoader, device: torch.device) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Generate predictions using the loaded model
     
-    # Choose split method
-    if use_custom_split:
-        print("Using custom split: patients 1-5 as validation set")
-        train_patients, val_patients, test_patients = get_custom_patient_splits_no_test(data_dir)
-    else:
-        print("Using automatic patient splits")
-        train_patients, val_patients, test_patients = get_patient_splits(data_dir)
-    
-    # Set up image transformations
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5], std=[0.5])
-    ])
-    
-    # Create dataset
-    dataset = CrossPatientTransitionsDataset(
-        data_dir=data_dir,
-        transform=transform,
-        split=split,
-        train_patients=train_patients,
-        val_patients=val_patients,
-        test_patients=test_patients,
-        small_subset=False,
-        normalize_actions=True
-    )
-    
-    print(f"Dataset created: {len(dataset)} samples")
-    print(f"Patients: {dataset.get_patient_stats()}")
-    
-    return dataset
-
-
-def generate_predictions(model, data_loader, device):
-    """Generate predictions on dataset"""
+    Args:
+        model: Loaded CardiacDreamerSystem model
+        data_loader: DataLoader for validation data
+        device: Computing device (GPU/CPU)
+        
+    Returns:
+        Tuple of (predictions, ground_truth) as numpy arrays [N, 6]
+    """
+    model = model.to(device)
     model.eval()
     
     all_predictions = []
-    all_targets = []
+    all_ground_truth = []
     
-    print("Generating predictions...")
+    print(f"Generating predictions for {len(data_loader)} batches...")
+    
     with torch.no_grad():
         for batch_idx, batch in enumerate(data_loader):
-            if batch_idx % 10 == 0:
-                print(f"Processing batch {batch_idx + 1}/{len(data_loader)}")
-            
-            image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt = batch
-            
-            # Move to device
-            image_t1 = image_t1.to(device)
-            a_hat_t1_to_t2_gt = a_hat_t1_to_t2_gt.to(device)
-            at1_6dof_gt = at1_6dof_gt.to(device)
-            
-            # Forward pass
-            outputs = model(image_t1, a_hat_t1_to_t2_gt)
-            at1_pred = outputs['predicted_action_composed']  # Main task prediction
-            
-            # Unified denormalization: all predictions and targets use same statistics
-            # Get normalization statistics from dataset
-            if hasattr(data_loader.dataset, 'action_mean') and hasattr(data_loader.dataset, 'action_std'):
-                action_mean = torch.tensor(data_loader.dataset.action_mean, device=device)
-                action_std = torch.tensor(data_loader.dataset.action_std, device=device)
+            try:
+                # Parse batch data - format: (image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt)
+                image_t1, a_hat_t1_to_t2_gt, at1_6dof_gt, at2_6dof_gt = batch
                 
-                # Denormalize predictions and targets
-                at1_pred_denorm = at1_pred * action_std + action_mean
-                at1_target_denorm = at1_6dof_gt * action_std + action_mean
-            else:
-                print("Warning: No normalization stats found, using raw values")
-                at1_pred_denorm = at1_pred
-                at1_target_denorm = at1_6dof_gt
-            
-            # Collect results (using denormalized values)
-            all_predictions.append(at1_pred_denorm.cpu().numpy())
-            all_targets.append(at1_target_denorm.cpu().numpy())
+                # Move to device
+                image_t1 = image_t1.to(device)
+                a_hat_t1_to_t2_gt = a_hat_t1_to_t2_gt.to(device)
+                at1_6dof_gt = at1_6dof_gt.to(device)
+                
+                # Generate prediction using the model's forward method
+                # CardiacDreamerSystem.forward(image_t1, a_hat_t1_to_t2_gt) returns a dict
+                system_outputs = model(image_t1, a_hat_t1_to_t2_gt)
+                
+                # Extract the main prediction: predicted_action_composed
+                predicted_action = system_outputs["predicted_action_composed"]
+                
+                # Collect predictions and ground truth
+                all_predictions.append(predicted_action.cpu().numpy())
+                all_ground_truth.append(at1_6dof_gt.cpu().numpy())
+                
+                if (batch_idx + 1) % 10 == 0:
+                    print(f"  Processed {batch_idx + 1}/{len(data_loader)} batches")
+                    
+            except Exception as e:
+                print(f"Error processing batch {batch_idx}: {e}")
+                continue
     
-    # Combine all batches
+    if not all_predictions:
+        raise ValueError("No valid predictions generated!")
+    
+    # Concatenate all results
     predictions = np.vstack(all_predictions)
-    targets = np.vstack(all_targets)
+    ground_truth = np.vstack(all_ground_truth)
     
-    print(f"Generated predictions for {predictions.shape[0]} samples")
-    return predictions, targets
+    print(f"Prediction generation completed: {predictions.shape[0]} samples")
+    
+    return predictions, ground_truth
 
 
-def calculate_metrics(predictions, ground_truth):
-    """Calculate detailed evaluation metrics"""
-    dimension_names = ['X', 'Y', 'Z', 'Roll', 'Pitch', 'Yaw']
-    dimension_units = ['mm', 'mm', 'mm', 'deg', 'deg', 'deg']
+def denormalize_actions(normalized_actions: np.ndarray, action_mean: np.ndarray, action_std: np.ndarray) -> np.ndarray:
+    """
+    Denormalize actions back to original scale
+    
+    Args:
+        normalized_actions: Normalized action values [N, 6]
+        action_mean: Mean values used for normalization [6]
+        action_std: Standard deviation values used for normalization [6]
+        
+    Returns:
+        Denormalized actions in original physical units [N, 6]
+    """
+    return normalized_actions * action_std + action_mean
+
+
+def calculate_metrics(predictions: np.ndarray, ground_truth: np.ndarray, 
+                     action_mean: np.ndarray = None, action_std: np.ndarray = None) -> Dict[str, Dict[str, Any]]:
+    """
+    Calculate comprehensive metrics for each dimension
+    
+    Args:
+        predictions: Predicted values [N, 6] (normalized or denormalized)
+        ground_truth: Ground truth values [N, 6] (normalized or denormalized)
+        action_mean: Mean values for denormalization [6] (optional)
+        action_std: Std values for denormalization [6] (optional)
+        
+    Returns:
+        Dictionary with metrics for each dimension
+    """
+    print("Calculating metrics for each dimension...")
+    
+    if predictions.shape != ground_truth.shape:
+        raise ValueError(f"Shape mismatch: predictions {predictions.shape} vs ground_truth {ground_truth.shape}")
+    
+    # Denormalize if normalization stats are provided
+    if action_mean is not None and action_std is not None:
+        print("Denormalizing predictions and ground truth to original physical units...")
+        predictions_denorm = denormalize_actions(predictions, action_mean, action_std)
+        ground_truth_denorm = denormalize_actions(ground_truth, action_mean, action_std)
+        
+        print(f"Original range (normalized): pred [{predictions.min():.3f}, {predictions.max():.3f}], gt [{ground_truth.min():.3f}, {ground_truth.max():.3f}]")
+        print(f"Denormalized range: pred [{predictions_denorm.min():.3f}, {predictions_denorm.max():.3f}], gt [{ground_truth_denorm.min():.3f}, {ground_truth_denorm.max():.3f}]")
+        
+        # Use denormalized values for metrics calculation
+        pred_data = predictions_denorm
+        gt_data = ground_truth_denorm
+        print("USING DENORMALIZED VALUES FOR MAE CALCULATION (original physical units)")
+    else:
+        print("WARNING: No normalization stats provided - calculating metrics on normalized values!")
+        print("This will result in artificially small MAE values that don't reflect physical units.")
+        pred_data = predictions
+        gt_data = ground_truth
+    
+    # Define dimension names and units
+    dimension_info = {
+        'X': {'name': 'X Translation', 'unit': 'mm'},
+        'Y': {'name': 'Y Translation', 'unit': 'mm'},
+        'Z': {'name': 'Z Translation', 'unit': 'mm'},
+        'Roll': {'name': 'Roll Rotation', 'unit': 'degrees'},
+        'Pitch': {'name': 'Pitch Rotation', 'unit': 'degrees'},
+        'Yaw': {'name': 'Yaw Rotation', 'unit': 'degrees'}
+    }
     
     metrics = {}
     
-    for i, (dim_name, unit) in enumerate(zip(dimension_names, dimension_units)):
-        pred_dim = predictions[:, i]
-        gt_dim = ground_truth[:, i]
+    for i, (dim_key, dim_info) in enumerate(dimension_info.items()):
+        pred_dim = pred_data[:, i]
+        gt_dim = gt_data[:, i]
         
-        # Calculate various metrics
-        r2 = r2_score(gt_dim, pred_dim)
-        mse = np.mean((pred_dim - gt_dim) ** 2)
+        # Calculate MAE (now in original physical units)
         mae = np.mean(np.abs(pred_dim - gt_dim))
+        
+        # Calculate MSE and RMSE
+        mse = np.mean((pred_dim - gt_dim) ** 2)
         rmse = np.sqrt(mse)
-        correlation = np.corrcoef(pred_dim, gt_dim)[0, 1]
         
-        # Calculate percentage error
-        mape = np.mean(np.abs((pred_dim - gt_dim) / (gt_dim + 1e-8))) * 100  # Avoid division by zero
+        # Calculate R² score
+        try:
+            r2 = r2_score(gt_dim, pred_dim)
+        except:
+            r2 = float('nan')
         
-        metrics[dim_name] = {
-            'r2_score': float(r2),
-            'mse': float(mse),
+        # Calculate Pearson correlation
+        try:
+            correlation, p_value = pearsonr(pred_dim, gt_dim)
+            if np.isnan(correlation):
+                correlation = 0.0
+                p_value = 1.0
+        except:
+            correlation = 0.0
+            p_value = 1.0
+        
+        # Calculate additional metrics
+        mean_error = np.mean(pred_dim - gt_dim)  # Bias
+        std_error = np.std(pred_dim - gt_dim)    # Standard deviation of errors
+        
+        # Calculate percentage metrics (avoid division by zero)
+        gt_range = np.max(gt_dim) - np.min(gt_dim)
+        mape = np.mean(np.abs((gt_dim - pred_dim) / (np.abs(gt_dim) + 1e-8))) * 100  # MAPE
+        
+        metrics[dim_key] = {
+            'name': dim_info['name'],
+            'unit': dim_info['unit'],
             'mae': float(mae),
+            'mse': float(mse), 
             'rmse': float(rmse),
+            'r2_score': float(r2),
             'correlation': float(correlation),
+            'correlation_p_value': float(p_value),
+            'mean_error': float(mean_error),
+            'std_error': float(std_error),
             'mape': float(mape),
-            'pred_mean': float(np.mean(pred_dim)),
-            'pred_std': float(np.std(pred_dim)),
             'gt_mean': float(np.mean(gt_dim)),
             'gt_std': float(np.std(gt_dim)),
-            'unit': unit
+            'gt_range': float(gt_range),
+            'pred_mean': float(np.mean(pred_dim)),
+            'pred_std': float(np.std(pred_dim)),
+            'sample_count': len(pred_dim)
         }
+        
+        print(f"  {dim_key}: MAE={mae:.3f} {dim_info['unit']}, R²={r2:.3f}, Corr={correlation:.3f}")
     
     # Calculate overall metrics
-    overall_r2 = np.mean([metrics[dim]['r2_score'] for dim in dimension_names])
-    overall_mse = np.mean([metrics[dim]['mse'] for dim in dimension_names])
-    overall_correlation = np.mean([metrics[dim]['correlation'] for dim in dimension_names])
+    overall_mae = np.mean([metrics[dim]['mae'] for dim in dimension_info.keys()])
+    overall_r2 = np.mean([metrics[dim]['r2_score'] for dim in dimension_info.keys() if not np.isnan(metrics[dim]['r2_score'])])
+    overall_correlation = np.mean([metrics[dim]['correlation'] for dim in dimension_info.keys()])
     
-    metrics['overall'] = {
-        'mean_r2': float(overall_r2),
-        'mean_mse': float(overall_mse),
-        'mean_correlation': float(overall_correlation),
-        'total_samples': int(len(predictions))
+    metrics['Overall'] = {
+        'name': 'Overall Average',
+        'unit': 'mixed',
+        'mae': float(overall_mae),
+        'r2_score': float(overall_r2),
+        'correlation': float(overall_correlation),
+        'sample_count': pred_data.shape[0]
     }
+    
+    print(f"  Overall: MAE={overall_mae:.3f}, R²={overall_r2:.3f}, Corr={overall_correlation:.3f}")
     
     return metrics
 
 
-def create_scatter_plots(predictions, ground_truth, model_name, split_name, output_dir):
-    """Create detailed scatter plots"""
-    print(f"Creating scatter plots for {model_name} on {split_name} set...")
+def evaluate_model_on_dataset(model, dataset, device: torch.device, batch_size: int = 16) -> Dict[str, Any]:
+    """
+    Complete evaluation pipeline for a model on a dataset
     
-    # Create output directory
-    plots_dir = os.path.join(output_dir, f"scatter_plots_{model_name}_{split_name}")
-    os.makedirs(plots_dir, exist_ok=True)
+    Args:
+        model: Loaded model
+        dataset: Dataset to evaluate on
+        device: Computing device
+        batch_size: Batch size for evaluation
+        
+    Returns:
+        Complete evaluation results
+    """
+    from torch.utils.data import DataLoader
     
-    # 6DOF dimension names
-    dimension_names = ['X', 'Y', 'Z', 'Roll', 'Pitch', 'Yaw']
-    dimension_units = ['mm', 'mm', 'mm', 'deg', 'deg', 'deg']
+    # Create data loader
+    data_loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True if device.type == 'cuda' else False
+    )
     
-    # Set plot style
-    plt.style.use('seaborn-v0_8')
-    sns.set_palette("husl")
+    # Generate predictions
+    predictions, ground_truth = generate_predictions(model, data_loader, device)
     
-    r2_scores = []
+    # Calculate metrics
+    metrics = calculate_metrics(predictions, ground_truth)
     
-    # Create individual scatter plots
-    for i, (dim_name, unit) in enumerate(zip(dimension_names, dimension_units)):
-        plt.figure(figsize=(10, 8))
-        
-        pred_dim = predictions[:, i]
-        gt_dim = ground_truth[:, i]
-        
-        # Calculate R² score
-        r2 = r2_score(gt_dim, pred_dim)
-        r2_scores.append(r2)
-        correlation = np.corrcoef(pred_dim, gt_dim)[0, 1]
-        
-        # Create scatter plot
-        plt.scatter(gt_dim, pred_dim, alpha=0.6, s=30, edgecolors='black', linewidth=0.5)
-        
-        # Add perfect prediction line (y=x)
-        min_val = min(np.min(gt_dim), np.min(pred_dim))
-        max_val = max(np.max(gt_dim), np.max(pred_dim))
-        plt.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect Prediction (y=x)')
-        
-        # Add trend line
-        z = np.polyfit(gt_dim, pred_dim, 1)
-        p = np.poly1d(z)
-        plt.plot(gt_dim, p(gt_dim), 'g-', linewidth=2, alpha=0.8, label=f'Trend Line (slope={z[0]:.3f})')
-        
-        # Set labels and title
-        plt.xlabel(f'Ground Truth {dim_name} ({unit})', fontsize=12)
-        plt.ylabel(f'Predicted {dim_name} ({unit})', fontsize=12)
-        plt.title(f'{dim_name} Axis: Predicted vs Ground Truth\nR² = {r2:.4f}, Correlation = {correlation:.4f}', fontsize=14)
-        
-        # Add grid and legend
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        
-        # Set equal axis ratio
-        plt.axis('equal')
-        
-        # Save individual plot
-        plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, f'scatter_{dim_name.lower()}.png'), dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"  {dim_name} axis: R² = {r2:.4f}")
-    
-    # Create combined plot
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    axes = axes.flatten()
-    
-    for i, (dim_name, unit) in enumerate(zip(dimension_names, dimension_units)):
-        pred_dim = predictions[:, i]
-        gt_dim = ground_truth[:, i]
-        r2 = r2_scores[i]
-        
-        # Scatter plot
-        axes[i].scatter(gt_dim, pred_dim, alpha=0.6, s=20, edgecolors='black', linewidth=0.3)
-        
-        # Perfect prediction line
-        min_val = min(np.min(gt_dim), np.min(pred_dim))
-        max_val = max(np.max(gt_dim), np.max(pred_dim))
-        axes[i].plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, alpha=0.8)
-        
-        # Trend line
-        z = np.polyfit(gt_dim, pred_dim, 1)
-        p = np.poly1d(z)
-        axes[i].plot(gt_dim, p(gt_dim), 'g-', linewidth=2, alpha=0.8)
-        
-        # Labels and title
-        axes[i].set_xlabel(f'Ground Truth {dim_name} ({unit})')
-        axes[i].set_ylabel(f'Predicted {dim_name} ({unit})')
-        axes[i].set_title(f'{dim_name}: R² = {r2:.4f}')
-        axes[i].grid(True, alpha=0.3)
-        axes[i].set_aspect('equal', adjustable='box')
-    
-    plt.suptitle(f'{model_name} on {split_name} set - Mean R² = {np.mean(r2_scores):.4f}', fontsize=16)
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, f'scatter_combined_{model_name}_{split_name}.png'), dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"Scatter plots saved to: {plots_dir}")
-    return r2_scores
+    return {
+        'metrics': metrics,
+        'predictions': predictions,
+        'ground_truth': ground_truth,
+        'sample_count': len(dataset)
+    }
 
 
-def evaluate_model(checkpoint_path, model_name, data_loader, device, split_name, output_dir):
-    """Evaluate single model"""
-    print(f"\nEvaluating {model_name} on {split_name} set...")
-    print(f"Checkpoint: {checkpoint_path}")
+def print_evaluation_summary(metrics: Dict[str, Dict[str, Any]]):
+    """
+    Print a formatted summary of evaluation metrics
     
-    try:
-        # 1. Load model
-        model = load_model_from_checkpoint(checkpoint_path)
-        model = model.to(device)
-        
-        # 2. Generate predictions
-        predictions, ground_truth = generate_predictions(model, data_loader, device)
-        
-        # 3. Calculate metrics
-        metrics = calculate_metrics(predictions, ground_truth)
-        
-        # 4. Create scatter plots
-        r2_scores = create_scatter_plots(predictions, ground_truth, model_name, split_name, output_dir)
-        
-        # 5. Save detailed statistics
-        stats_file = os.path.join(output_dir, f"detailed_metrics_{model_name}_{split_name}.json")
-        with open(stats_file, 'w') as f:
-            json.dump({
-                'model_name': model_name,
-                'split_name': split_name,
-                'checkpoint_path': checkpoint_path,
-                'timestamp': datetime.now().isoformat(),
-                'metrics': metrics
-            }, f, indent=2)
-        
-        print(f"Detailed metrics saved to: {stats_file}")
-        
-        # 6. Print brief results
-        print(f"\n{model_name} on {split_name} Results:")
-        dimension_names = ['X', 'Y', 'Z', 'Roll', 'Pitch', 'Yaw']
-        for i, dim_name in enumerate(dimension_names):
-            r2 = metrics[dim_name]['r2_score']
-            mse = metrics[dim_name]['mse']
-            print(f"  {dim_name:5s}: R² = {r2:7.4f}, MSE = {mse:8.4f}")
-        print(f"  Mean : R² = {metrics['overall']['mean_r2']:7.4f}, MSE = {metrics['overall']['mean_mse']:8.4f}")
-        
-        return metrics
-        
-    except Exception as e:
-        print(f"Error evaluating {model_name} on {split_name}: {e}")
-        return None
+    Args:
+        metrics: Metrics dictionary from calculate_metrics
+    """
+    print("\n" + "="*80)
+    print("EVALUATION SUMMARY")
+    print("="*80)
+    
+    # Print dimension-wise results
+    dimensions = ['X', 'Y', 'Z', 'Roll', 'Pitch', 'Yaw']
+    
+    print(f"{'Dimension':<12} {'MAE':<10} {'RMSE':<10} {'R²':<8} {'Correlation':<12} {'Unit':<8}")
+    print("-" * 70)
+    
+    for dim in dimensions:
+        if dim in metrics:
+            m = metrics[dim]
+            print(f"{dim:<12} {m['mae']:<10.3f} {m['rmse']:<10.3f} {m['r2_score']:<8.3f} {m['correlation']:<12.3f} {m['unit']:<8}")
+    
+    if 'Overall' in metrics:
+        print("-" * 70)
+        m = metrics['Overall']
+        print(f"{'Overall':<12} {m['mae']:<10.3f} {'N/A':<10} {m['r2_score']:<8.3f} {m['correlation']:<12.3f} {'mixed':<8}")
+    
+    print("="*80)
 
 
-def main():
-    """Main function"""
-    parser = argparse.ArgumentParser(description="Comprehensive model evaluation with automatic checkpoint detection")
-    parser.add_argument("--data_dir", type=str, default="data/processed",
-                       help="Data directory path")
-    parser.add_argument("--output_dir", type=str, default="model_evaluation_results",
-                       help="Output directory for results")
-    parser.add_argument("--split", type=str, default="val", choices=["train", "val", "test", "both"],
-                       help="Dataset split to evaluate on (use 'both' for train+val)")
-    parser.add_argument("--batch_size", type=int, default=16,
-                       help="Batch size for evaluation")
-    parser.add_argument("--use_custom_split", action="store_true",
-                       help="Use custom split where patients 1-5 are validation set")
-    parser.add_argument("--auto_find_best", action="store_true",
-                       help="Automatically find best checkpoint from run directory")
-    parser.add_argument("--run_dir", type=str, default="outputs/enhanced_run_20250603_003625",
-                       help="Run directory to find best checkpoint (used with --auto_find_best)")
-    parser.add_argument("--checkpoint_path", type=str,
-                       help="Specific checkpoint path to evaluate")
-    
-    args = parser.parse_args()
-    
-    print("🚀 Starting comprehensive model evaluation...")
-    print(f"📁 Data directory: {args.data_dir}")
-    print(f"📁 Output directory: {args.output_dir}")
-    print(f"📊 Evaluating on: {args.split} split(s)")
-    if args.use_custom_split:
-        print("🔧 Using custom split: patients 1-5 as validation set")
-    else:
-        print("🔧 Using automatic patient splits")
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Determine checkpoint path
-    checkpoint_path = None
-    model_name = "model"
-    
-    if args.auto_find_best and args.run_dir:
-        print(f"\n🔍 Looking for best checkpoint in: {args.run_dir}")
-        checkpoint_path = find_best_checkpoint(args.run_dir)
-        if checkpoint_path:
-            # Extract model name from run directory
-            model_name = f"best_{os.path.basename(args.run_dir)}"
-        else:
-            print("❌ Could not find best checkpoint!")
-            return
-    elif args.checkpoint_path:
-        checkpoint_path = args.checkpoint_path
-        # Extract model name from checkpoint filename
-        model_name = os.path.basename(checkpoint_path).replace('.ckpt', '')
-    else:
-        print("❌ Please specify either --auto_find_best with --run_dir or --checkpoint_path")
-        return
-    
-    if not os.path.exists(checkpoint_path):
-        print(f"❌ Checkpoint file not found: {checkpoint_path}")
-        return
-    
-    print(f"✅ Using checkpoint: {checkpoint_path}")
-    
-    # Determine which splits to evaluate
-    splits_to_evaluate = []
-    if args.split == "both":
-        splits_to_evaluate = ["train", "val"]
-    else:
-        splits_to_evaluate = [args.split]
-    
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"🔧 Using device: {device}")
-    
-    # Evaluate on each split
-    all_results = {}
-    
-    for split in splits_to_evaluate:
-        print(f"\n{'='*60}")
-        print(f"📊 Evaluating on {split.upper()} set")
-        print(f"{'='*60}")
-        
-        # Create dataset
-        dataset = create_dataset(args.data_dir, split=split, use_custom_split=args.use_custom_split)
-        
-        data_loader = DataLoader(
-            dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=2,
-            pin_memory=False,
-            persistent_workers=False
-        )
-        
-        # Evaluate model
-        results = evaluate_model(
-            checkpoint_path=checkpoint_path,
-            model_name=model_name,
-            data_loader=data_loader,
-            device=device,
-            split_name=split,
-            output_dir=args.output_dir
-        )
-        
-        if results:
-            all_results[split] = results
-    
-    # Create summary report
-    if all_results:
-        print(f"\n{'='*60}")
-        print("📊 EVALUATION SUMMARY")
-        print(f"{'='*60}")
-        
-        summary_data = []
-        for split, results in all_results.items():
-            if results:
-                summary_data.append({
-                    'Split': split.upper(),
-                    'Samples': results['overall']['total_samples'],
-                    'Mean_R2': results['overall']['mean_r2'],
-                    'Mean_MSE': results['overall']['mean_mse'],
-                    'Mean_Correlation': results['overall']['mean_correlation']
-                })
-        
-        # Save summary
-        summary_df = pd.DataFrame(summary_data)
-        summary_file = os.path.join(args.output_dir, f'evaluation_summary_{model_name}.csv')
-        summary_df.to_csv(summary_file, index=False)
-        
-        print(summary_df.to_string(index=False))
-        print(f"\n📁 Summary saved to: {summary_file}")
-    
-    print(f"\n🎉 Evaluation completed!")
-    print(f"📁 All results saved to: {args.output_dir}")
+# Backward compatibility aliases
+def load_dreamer_model(checkpoint_path: str):
+    """Alias for load_model_from_checkpoint for backward compatibility"""
+    return load_model_from_checkpoint(checkpoint_path)
 
 
-if __name__ == "__main__":
-    main() 
+def evaluate_dreamer_model(model, data_loader, device):
+    """Alias for generate_predictions for backward compatibility"""
+    return generate_predictions(model, data_loader, device) 

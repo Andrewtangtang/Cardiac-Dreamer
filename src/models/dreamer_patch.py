@@ -325,13 +325,13 @@ if __name__ == "__main__":
         
         assert full_sequence.shape == (batch_size, 50, 768), \
             f"Expected full_sequence shape {(batch_size, 50, 768)}, got {full_sequence.shape}"
-        
+            
         # Test pooling on predicted next features
         pooled_next = pool_patch_features(predicted_next_features)
         
         print(f"\nPooled feature shapes:")
         print(f"  Pooled next features: {pooled_next.shape}")
-        
+            
         assert pooled_next.shape == (batch_size, 512), \
             f"Expected pooled_next shape {(batch_size, 512)}, got {pooled_next.shape}"
         
