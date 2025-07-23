@@ -17,6 +17,10 @@ pytorch-lightning = "*"
 tensorboard = "*"
 seaborn = "*"
 wandb = "*"
+psutil = "*"
+gputil = "*"
+scikit-learn = "*"
+nvidia-cudnn-cu12 = "*"
 
 [dev-packages]
 

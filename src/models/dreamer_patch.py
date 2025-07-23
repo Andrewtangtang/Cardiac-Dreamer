@@ -1,5 +1,5 @@
-# 512 token version
-# Dreamer Channel model definition
+# Patch token version
+# Dreamer Patch model definition
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ class PositionalEncoding(nn.Module):
     
     Adds positional information to the input embeddings
     """
-    def __init__(self, d_model: int, max_len: int = 514):
+    def __init__(self, d_model: int, max_len: int = 50):
         super().__init__()
         
         # Create positional encoding matrix
@@ -78,41 +78,45 @@ class ActionEmbedding(nn.Module):
         return action_emb.unsqueeze(1)
 
 
-class ChannelTokenEmbedding(nn.Module):
+class PatchTokenEmbedding(nn.Module):
     """
-    Embedding layer for channel tokens
+    Embedding layer for patch tokens
     
-    Maps channel tokens (from ResNet feature map) to transformer embeddings
+    Converts ResNet feature map patches to transformer embeddings
     """
-    def __init__(self, in_dim: int = 49, d_model: int = 768):
+    def __init__(self, in_channels: int = 512, d_model: int = 768):
         super().__init__()
-        self.projection = nn.Linear(in_dim, d_model)
+        self.projection = nn.Linear(in_channels, d_model)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, feature_map: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: Channel tokens of shape [batch_size, n_channels, feature_dim]
-               Typically [B, 512, 49] for 7x7 feature maps
-               
+            feature_map: Feature map from ResNet [batch_size, 512, 7, 7]
+                
         Returns:
-            Channel embeddings of shape [batch_size, n_channels, d_model]
+            Patch embeddings of shape [batch_size, 49, d_model]
         """
-        return self.projection(x)
+        B, C, H, W = feature_map.shape
+        # Reshape: [B, 512, 7, 7] -> [B, 49, 512]
+        patches = feature_map.view(B, C, H * W).transpose(1, 2)
+        # Project: [B, 49, 512] -> [B, 49, d_model]
+        return self.projection(patches)
 
 
-class DreamerChannel(nn.Module):
+class DreamerPatch(nn.Module):
     """
-    Dreamer Channel-Token Model
+    Dreamer Patch-Token Model
     
-    Uses 512 channel tokens + 1 action token in a transformer encoder
+    Uses 49 patch tokens + 1 action token in a transformer encoder
     Main task: Predict next frame features (not reconstruction)
+    Each patch token represents a spatial location with full 512-dim features
     
     Args:
         d_model: Dimension of transformer model
         nhead: Number of attention heads
         num_layers: Number of transformer layers
         dim_feedforward: Dimension of feedforward network
-        feature_dim: Dimension of input features (7x7=49 for ResNet)
+        in_channels: Number of input channels from ResNet (512)
         dropout: Dropout rate
         activation: Activation function
         use_flash_attn: Whether to use flash attention
@@ -123,7 +127,7 @@ class DreamerChannel(nn.Module):
         nhead: int = 12,
         num_layers: int = 6,
         dim_feedforward: int = 3072,
-        feature_dim: int = 49,
+        in_channels: int = 512,
         dropout: float = 0.1,
         activation: str = "gelu",
         use_flash_attn: bool = False  # Default to False to avoid warnings
@@ -131,14 +135,14 @@ class DreamerChannel(nn.Module):
         super().__init__()
         
         self.d_model = d_model
-        self.feature_dim = feature_dim
+        self.in_channels = in_channels
         
         # Token embeddings
-        self.channel_embedding = ChannelTokenEmbedding(in_dim=feature_dim, d_model=d_model)
+        self.patch_embedding = PatchTokenEmbedding(in_channels=in_channels, d_model=d_model)
         self.action_embedding = ActionEmbedding(d_model=d_model)
         
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=514)
+        # Positional encoding (50 tokens: 1 action + 49 patches)
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=50)
         
         # Layer normalization before transformer
         self.layer_norm = nn.LayerNorm(d_model)
@@ -168,37 +172,37 @@ class DreamerChannel(nn.Module):
                 print("Warning: flash_attn package not found. Using standard attention mechanism.")
         
         # Main task: Projection for next frame feature prediction
-        self.next_frame_projection = nn.Linear(d_model, feature_dim)
+        self.next_frame_projection = nn.Linear(d_model, in_channels)
         
     def forward(
         self, 
-        channel_tokens: torch.Tensor, 
+        feature_map: torch.Tensor, 
         action: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass - Main task: Predict next frame features
 
         Args:
-            channel_tokens: Channel tokens from backbone [batch_size, 512, feature_dim]
+            feature_map: Feature map from ResNet [batch_size, 512, 7, 7]
             action: 6-DOF action [batch_size, 6]
             
         Returns:
-            pooled_next_frame_features: Pooled next frame features [batch_size, 512]
-            full_sequence: Full sequence of transformed tokens [batch_size, 513, d_model]
+            predicted_next_features: Predicted next frame features [batch_size, 49, 512]
+            full_sequence: Full sequence of transformed tokens [batch_size, 50, d_model]
         """
-        batch_size = channel_tokens.shape[0]
+        batch_size = feature_map.shape[0]
         
-        # Project channel tokens to embedding dimension
-        # [B, 512, 49] -> [B, 512, d_model]
-        channel_emb = self.channel_embedding(channel_tokens)
+        # Project feature map to patch tokens
+        # [B, 512, 7, 7] -> [B, 49, d_model]
+        patch_emb = self.patch_embedding(feature_map)
         
         # Embed action to token
         # [B, 6] -> [B, 1, d_model]
         action_emb = self.action_embedding(action)
         
-        # Concatenate action token (CLS) with channel tokens
-        # [B, 1, d_model] + [B, 512, d_model] -> [B, 513, d_model]
-        sequence = torch.cat([action_emb, channel_emb], dim=1)
+        # Concatenate action token (CLS) with patch tokens
+        # [B, 1, d_model] + [B, 49, d_model] -> [B, 50, d_model]
+        sequence = torch.cat([action_emb, patch_emb], dim=1)
         
         # Add positional encoding
         sequence = self.pos_encoder(sequence)
@@ -207,94 +211,84 @@ class DreamerChannel(nn.Module):
         sequence = self.layer_norm(sequence)
         
         # Pass through transformer encoder
-        # [B, 513, d_model] -> [B, 513, d_model]
+        # [B, 50, d_model] -> [B, 50, d_model]
         transformed_sequence = self.transformer_encoder(sequence)
         
-        # Split back into action token and channel tokens
-        # [B, 513, d_model] -> [B, 1, d_model], [B, 512, d_model]
+        # Split back into action token and patch tokens
+        # [B, 50, d_model] -> [B, 1, d_model], [B, 49, d_model]
         transformed_action_token = transformed_sequence[:, 0:1, :]
-        transformed_channel_tokens = transformed_sequence[:, 1:, :]
+        transformed_patch_tokens = transformed_sequence[:, 1:, :]
         
-        # Main task: Generate next frame features from transformed channel tokens
+        # Main task: Use patch tokens to predict next frame features
         # This is the core functionality - predicting next frame from current + action
-        # [B, 512, d_model] -> [B, 512, feature_dim]
-        next_frame_features = self.next_frame_projection(transformed_channel_tokens)
+        # [B, 49, d_model] -> [B, 49, 512]
+        predicted_next_features = self.next_frame_projection(transformed_patch_tokens)
         
-        # Pool each channel token's features to get a single value per channel
-        # [B, 512, feature_dim] -> [B, 512]
-        pooled_next_frame_features = torch.mean(next_frame_features, dim=2)
-        
-        return pooled_next_frame_features, transformed_sequence
+        return predicted_next_features, transformed_sequence
 
 
-def get_dreamer_channel(
+def get_dreamer_patch(
     d_model: int = 768,
     nhead: int = 12,
     num_layers: int = 6,
-    feature_dim: int = 49,
+    in_channels: int = 512,
     use_flash_attn: bool = False  # Default to False to avoid warnings
-) -> DreamerChannel:
+) -> DreamerPatch:
     """
-    Helper function to create a DreamerChannel model
+    Helper function to create a DreamerPatch model
     
     Args:
         d_model: Hidden dimension of transformer
         nhead: Number of attention heads
         num_layers: Number of transformer layers
-        feature_dim: Dimension of input features
+        in_channels: Number of input channels from ResNet
         use_flash_attn: Whether to use flash attention
         
     Returns:
-        DreamerChannel model
+        DreamerPatch model
     """
-    return DreamerChannel(
+    return DreamerPatch(
         d_model=d_model,
         nhead=nhead,
         num_layers=num_layers,
-        feature_dim=feature_dim,
+        in_channels=in_channels,
         use_flash_attn=use_flash_attn
     )
 
 
-def pool_features(channel_tokens: torch.Tensor) -> torch.Tensor:
+def pool_patch_features(patch_tokens: torch.Tensor) -> torch.Tensor:
     """
-    Pools channel tokens to get a fixed-size feature vector
+    Pools patch tokens to get a fixed-size feature vector
     
     Args:
-        channel_tokens: Channel tokens [batch_size, 512, feature_dim] or already pooled [batch_size, 512]
+        patch_tokens: Patch tokens from DreamerPatch [batch_size, 49, 512]
         
     Returns:
         pooled_features: Pooled feature vector [batch_size, 512]
     """
-    if len(channel_tokens.shape) == 2:
-        # Already pooled [B, 512] -> return as is
-        return channel_tokens
-    elif channel_tokens.shape[-1] == 1:
-        # Already pooled with keepdim [B, 512, 1] -> [B, 512]
-        return channel_tokens.squeeze(-1)
-    else:
-        # Need to pool [B, 512, feature_dim] -> [B, 512]
-        return torch.mean(channel_tokens, dim=2)
+    # Global average pooling across the patch dimension
+    # [B, 49, 512] -> [B, 512]
+    return torch.mean(patch_tokens, dim=1)
 
 
 if __name__ == "__main__":
-    # Test DreamerChannel model with backbone
+    # Test DreamerPatch model with backbone
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # Create models
     backbone = get_resnet34_encoder(in_channels=1, pretrained=True).to(device)
-    dreamer = get_dreamer_channel(
+    dreamer = get_dreamer_patch(
         d_model=768,
         nhead=12,
         num_layers=6,
-        feature_dim=49,
+        in_channels=512,
         use_flash_attn=False  # Default to False
     ).to(device)
     
     print(f"Backbone model created")
-    print(f"DreamerChannel model created")
-    print(f"DreamerChannel config: d_model=768, nhead=12, num_layers=6")
+    print(f"DreamerPatch model created")
+    print(f"DreamerPatch config: d_model=768, nhead=12, num_layers=6")
     
     # Create sample input
     batch_size = 1  # Testing with single image as requested
@@ -315,42 +309,34 @@ if __name__ == "__main__":
         # [B, 1, 224, 224] -> [B, 512, 7, 7]
         feature_map = backbone(image)
         
-        # Reshape feature map to channel tokens
-        # [B, 512, 7, 7] -> [B, 512, 49]
-        channel_tokens = feature_map.reshape(batch_size, 512, -1)
-        
         print(f"\nIntermediate shapes:")
         print(f"  Feature map: {feature_map.shape}")
-        print(f"  Channel tokens: {channel_tokens.shape}")
         
-        # Forward pass through DreamerChannel
-        pooled_next_frame_features, full_sequence = dreamer(channel_tokens, action)
+        # Forward pass through DreamerPatch
+        predicted_next_features, full_sequence = dreamer(feature_map, action)
         
         print(f"\nOutput shapes:")
-        print(f"  Pooled next frame features: {pooled_next_frame_features.shape}")
+        print(f"  Predicted next features: {predicted_next_features.shape}")
         print(f"  Full sequence: {full_sequence.shape}")
         
         # Check that the shapes are as expected
-        assert pooled_next_frame_features.shape == (batch_size, 512), \
-            f"Expected pooled_next_frame_features shape {(batch_size, 512)}, got {pooled_next_frame_features.shape}"
+        assert predicted_next_features.shape == (batch_size, 49, 512), \
+            f"Expected predicted_next_features shape {(batch_size, 49, 512)}, got {predicted_next_features.shape}"
         
-        assert full_sequence.shape == (batch_size, 513, 768), \
-            f"Expected full_sequence shape {(batch_size, 513, 768)}, got {full_sequence.shape}"
-        
-        # Test pooling on both current and next features
-        pooled_current = pool_features(channel_tokens)
-        # pooled_next_frame_features is already [B, 512], no need to pool again
-        pooled_next = pooled_next_frame_features
+        assert full_sequence.shape == (batch_size, 50, 768), \
+            f"Expected full_sequence shape {(batch_size, 50, 768)}, got {full_sequence.shape}"
+            
+        # Test pooling on predicted next features
+        pooled_next = pool_patch_features(predicted_next_features)
         
         print(f"\nPooled feature shapes:")
-        print(f"  Pooled current features: {pooled_current.shape}")
         print(f"  Pooled next features: {pooled_next.shape}")
-        
-        assert pooled_current.shape == (batch_size, 512), \
-            f"Expected pooled_current shape {(batch_size, 512)}, got {pooled_current.shape}"
             
         assert pooled_next.shape == (batch_size, 512), \
             f"Expected pooled_next shape {(batch_size, 512)}, got {pooled_next.shape}"
         
         print("\nTest passed! All shapes match expected dimensions.") 
-        
+        print("Patch token approach successfully implemented:")
+        print("  - Token 0: Action token (at1->at2)")
+        print("  - Token 1-49: Patch tokens (each 512-dim vector for spatial location)")
+        print("  - Output: Average pooled 512-dim vector for guidance") 

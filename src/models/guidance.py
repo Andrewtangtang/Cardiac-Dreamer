@@ -162,15 +162,15 @@ if __name__ == "__main__":
         print(f"Channel tokens shape: {channel_tokens.shape}")
         
         # Forward pass through DreamerChannel
-        # [B, 512, 49] -> [B, 512, 49]
-        reconstructed_channels, full_sequence = dreamer(channel_tokens, action)
+        # [B, 512, 49] -> [B, 512]
+        predicted_next_features, full_sequence = dreamer(channel_tokens, action)
         print(f"DreamerChannel outputs:")
-        print(f"  - Reconstructed channels: {reconstructed_channels.shape}")
+        print(f"  - Predicted next features: {predicted_next_features.shape}")
         print(f"  - Full sequence: {full_sequence.shape}")
         
-        # Pool features from reconstructed channels
-        # [B, 512, 49] -> [B, 512]
-        pooled_features = pool_features(reconstructed_channels)
+        # Use predicted next features (already pooled for channel version)
+        # predicted_next_features is already [B, 512] for channel tokens
+        pooled_features = predicted_next_features
         print(f"Pooled features shape: {pooled_features.shape}")
         
         # Forward pass through Guidance Layer

@@ -17,9 +17,11 @@ import pytorch_lightning as pl
 from typing import Dict, Any, Tuple, Optional, List
 import matplotlib.pyplot as plt
 import numpy as np
+import gc  # 添加垃圾回收
 
 from src.models.backbone import get_resnet34_encoder
 from src.models.dreamer_channel import get_dreamer_channel, pool_features
+from src.models.dreamer_patch import get_dreamer_patch, pool_patch_features
 from src.models.guidance import get_guidance_layer
 from src.utils.transformation_utils import dof6_to_matrix, matrix_to_dof6, matrix_inverse
 
@@ -40,12 +42,16 @@ class CardiacDreamerSystem(pl.LightningModule):
         feature_dim: Dimension of spatial features (default: 49)
         in_channels: Number of input image channels (default: 1)
         use_pretrained: Whether to use pretrained backbone (default: True)
+        freeze_backbone_layers: Number of ResNet34 layers to freeze (default: 0)
+                               0: no freezing, 1: conv1+bn1, 2: +layer1, 3: +layer2, 4: +layer3
         lr: Learning rate (default: 1e-4)
         weight_decay: Weight decay for optimizer (default: 1e-5)
         lambda_t2_action: Weight for auxiliary t2 action loss (default: 1.0)
         smooth_l1_beta: Beta parameter for SmoothL1Loss (default: 1.0)
         use_flash_attn: Whether to use flash attention (default: True)
         primary_task_only: If True, only use main task loss (at1 prediction) (default: False)
+        scheduler_type: Type of scheduler to use (default: "cosine")
+        scheduler_config: Configuration for the scheduler (default: None)
     """
     def __init__(
         self,
@@ -56,12 +62,15 @@ class CardiacDreamerSystem(pl.LightningModule):
         feature_dim: int = 49, # Spatial dimension of channel tokens (e.g., 7*7=49)
         in_channels: int = 1,
         use_pretrained: bool = True,
+        freeze_backbone_layers: int = 0,  # New parameter for freezing ResNet34 layers
         lr: float = 1e-4,
         weight_decay: float = 1e-5,
         lambda_t2_action: float = 1.0,  # Weight for auxiliary t2 action loss
         smooth_l1_beta: float = 1.0, # Added beta for SmoothL1Loss
         use_flash_attn: bool = True,
-        primary_task_only: bool = False  # If True, only use main task loss (at1 prediction)
+        primary_task_only: bool = False,  # If True, only use main task loss (at1 prediction)
+        scheduler_type: str = "cosine",   # NEW: scheduler type
+        scheduler_config: dict = None     # NEW: scheduler configuration
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -70,6 +79,8 @@ class CardiacDreamerSystem(pl.LightningModule):
         self.lambda_t2_action = lambda_t2_action
         self.lr = lr
         self.weight_decay = weight_decay
+        self.scheduler_type = scheduler_type
+        self.scheduler_config = scheduler_config or {}
         
         # Initialize test step outputs collection for PyTorch Lightning v2.0.0 compatibility
         self.test_step_outputs = []
@@ -77,7 +88,16 @@ class CardiacDreamerSystem(pl.LightningModule):
         # Initialize validation step outputs collection for scatter plots
         self.validation_step_outputs = []
         
-        self.backbone = get_resnet34_encoder(in_channels=in_channels, pretrained=use_pretrained)
+        # 添加記憶體管理參數
+        self.max_validation_outputs = 1000  # 限制驗證輸出數量
+        self.max_test_outputs = 1000        # 限制測試輸出數量
+        
+        # Initialize backbone with layer freezing support
+        self.backbone = get_resnet34_encoder(
+            in_channels=in_channels, 
+            pretrained=use_pretrained,
+            freeze_layers=freeze_backbone_layers  # Pass the freeze parameter
+        )
         
         if token_type == "channel":
             self.dreamer = get_dreamer_channel(
@@ -87,8 +107,16 @@ class CardiacDreamerSystem(pl.LightningModule):
                 feature_dim=feature_dim, 
                 use_flash_attn=use_flash_attn
             )
+        elif token_type == "patch":
+            self.dreamer = get_dreamer_patch(
+                d_model=d_model,
+                nhead=nhead,
+                num_layers=num_layers,
+                in_channels=512,  # ResNet output channels
+                use_flash_attn=use_flash_attn
+            )
         else:
-            raise ValueError(f"Unsupported token_type: {token_type}")
+            raise ValueError(f"Unsupported token_type: {token_type}. Supported types: 'channel', 'patch'")
         
         self.guidance = get_guidance_layer(
             feature_dim=512, 
@@ -97,7 +125,33 @@ class CardiacDreamerSystem(pl.LightningModule):
         
         self.smooth_l1_loss = nn.SmoothL1Loss(beta=smooth_l1_beta)
         self.test_mse_metric = torch.nn.MSELoss() # For final MSE reporting in test_epoch_end
-
+        
+        # 打印模型結構信息
+        self._print_model_info()
+        
+    def _print_model_info(self):
+        """打印模型的參數統計信息"""
+        print(f"\n=== CardiacDreamerSystem Model Info ===")
+        print(f"Token type: {self.token_type}")
+        print(f"Frozen backbone layers: {self.hparams.freeze_backbone_layers}")
+        print(f"Scheduler type: {self.scheduler_type}")
+        
+        # 統計各組件的參數
+        backbone_total = sum(p.numel() for p in self.backbone.parameters())
+        backbone_trainable = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
+        
+        dreamer_params = sum(p.numel() for p in self.dreamer.parameters())
+        guidance_params = sum(p.numel() for p in self.guidance.parameters())
+        
+        total_params = sum(p.numel() for p in self.parameters())
+        total_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        
+        print(f"Backbone: {backbone_trainable:,}/{backbone_total:,} trainable ({backbone_trainable/backbone_total*100:.1f}%)")
+        print(f"Dreamer: {dreamer_params:,} parameters")
+        print(f"Guidance: {guidance_params:,} parameters")
+        print(f"Total: {total_trainable:,}/{total_params:,} trainable ({total_trainable/total_params*100:.1f}%)")
+        print("=" * 40)
+        
     def forward(
         self, 
         image_t1: torch.Tensor, 
@@ -113,32 +167,43 @@ class CardiacDreamerSystem(pl.LightningModule):
         Returns:
             Dictionary containing:
                 - predicted_action_composed: Predicted composed action a_t1_prime_composed [batch_size, 6]
-                - reconstructed_channels_t1: Reconstructed channel tokens from image_t1 [batch_size, 512, feature_dim]
                 - a_prime_t2_hat: Predicted action at t2 (output of guidance on f_hat_t2) [batch_size, 6]
                 - predicted_next_feature_tokens: Predicted feature tokens for t2 (f_hat_t2) [batch_size, 512, feature_dim]
         """
         batch_size = image_t1.shape[0]
         
         feature_map_t1 = self.backbone(image_t1)
-        channel_tokens_t1 = feature_map_t1.reshape(batch_size, 512, -1)
         
-        reconstructed_tokens_t1, _, predicted_next_feature_tokens_f_hat_t2 = self.dreamer(
-            channel_tokens_t1, a_hat_t1_to_t2_gt
-        )
+        if self.token_type == "channel":
+            channel_tokens_t1 = feature_map_t1.reshape(batch_size, 512, -1)
+            
+            predicted_next_feature_tokens_f_hat_t2, _ = self.dreamer(
+                channel_tokens_t1, a_hat_t1_to_t2_gt
+            )
+            
+            pooled_f_hat_t2 = pool_features(predicted_next_feature_tokens_f_hat_t2)
+            
+        elif self.token_type == "patch":
+            # For patch tokens, pass feature map directly
+            predicted_next_feature_tokens_f_hat_t2, _ = self.dreamer(
+                feature_map_t1, a_hat_t1_to_t2_gt
+            )
+            
+            pooled_f_hat_t2 = pool_patch_features(predicted_next_feature_tokens_f_hat_t2)
+            
+        else:
+            raise ValueError(f"Unsupported token_type: {self.token_type}")
         
-        pooled_f_hat_t2 = pool_features(predicted_next_feature_tokens_f_hat_t2)
         a_prime_t2_hat = self.guidance(pooled_f_hat_t2)
         
         T_a_hat_t1_to_t2_gt = dof6_to_matrix(a_hat_t1_to_t2_gt)
         T_a_prime_t2_hat = dof6_to_matrix(a_prime_t2_hat)
 
-        T_a_hat_t1_to_t2_gt_inv = matrix_inverse(T_a_hat_t1_to_t2_gt)
-        T_composed = torch.matmul(T_a_prime_t2_hat, T_a_hat_t1_to_t2_gt_inv)
+        T_composed = torch.matmul(T_a_hat_t1_to_t2_gt,T_a_prime_t2_hat)
         a_t1_prime_composed = matrix_to_dof6(T_composed)
         
         return {
             "predicted_action_composed": a_t1_prime_composed,
-            "reconstructed_channels_t1": reconstructed_tokens_t1,
             "a_prime_t2_hat": a_prime_t2_hat,
             "predicted_next_feature_tokens": predicted_next_feature_tokens_f_hat_t2
         }
@@ -149,11 +214,53 @@ class CardiacDreamerSystem(pl.LightningModule):
             lr=self.lr,
             weight_decay=self.weight_decay
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=50,
-            eta_min=1e-6
-        )
+        
+        # Configure scheduler based on type
+        if self.scheduler_type == "cosine":
+            # Standard CosineAnnealingLR
+            T_max = int(self.scheduler_config.get("T_max", 50))
+            eta_min = float(self.scheduler_config.get("eta_min", 1e-6))
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=T_max,
+                eta_min=eta_min
+            )
+            print(f"Using CosineAnnealingLR: T_max={T_max}, eta_min={eta_min}")
+            
+        elif self.scheduler_type == "cosine_warm_restarts":
+            # CosineAnnealingWarmRestarts - for escaping local minima
+            T_0 = int(self.scheduler_config.get("T_0", 50))
+            T_mult = int(self.scheduler_config.get("T_mult", 1))
+            eta_min = float(self.scheduler_config.get("eta_min", 1e-7))
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=T_0,
+                T_mult=T_mult,
+                eta_min=eta_min
+            )
+            print(f"Using CosineAnnealingWarmRestarts: T_0={T_0}, T_mult={T_mult}, eta_min={eta_min}")
+            
+        elif self.scheduler_type == "onecycle":
+            # OneCycleLR - for fast convergence
+            max_lr = float(self.scheduler_config.get("max_lr", self.lr * 3))
+            total_steps = int(self.scheduler_config.get("total_steps", 100))
+            pct_start = float(self.scheduler_config.get("pct_start", 0.3))
+            div_factor = float(self.scheduler_config.get("div_factor", 25.0))
+            final_div_factor = float(self.scheduler_config.get("final_div_factor", 1e4))
+            
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=max_lr,
+                total_steps=total_steps,
+                pct_start=pct_start,
+                div_factor=div_factor,
+                final_div_factor=final_div_factor
+            )
+            print(f"Using OneCycleLR: max_lr={max_lr}, total_steps={total_steps}, pct_start={pct_start}")
+            
+        else:
+            raise ValueError(f"Unsupported scheduler_type: {self.scheduler_type}. Supported: 'cosine', 'cosine_warm_restarts', 'onecycle'")
+        
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
@@ -269,11 +376,18 @@ class CardiacDreamerSystem(pl.LightningModule):
             self.log("val_total_loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
             self.log("val_main_task_loss", loss_dict["main_task_loss"], prog_bar=True, on_step=False, on_epoch=True)
             self.log("val_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
-        # Collect predictions and ground truth for scatter plots
-        self.validation_step_outputs.append({
-            "predicted_action_composed": predicted_composed_action.detach().cpu(),
-            "target_action_composed_gt": at1_6dof_gt.detach().cpu()
-        })
+        
+        # 🔧 修復記憶體洩漏：限制累積數量並確保tensor移到CPU
+        if len(self.validation_step_outputs) < self.max_validation_outputs:
+            # Collect predictions and ground truth for scatter plots
+            self.validation_step_outputs.append({
+                "predicted_action_composed": predicted_composed_action.detach().cpu().clone(),
+                "target_action_composed_gt": at1_6dof_gt.detach().cpu().clone()
+            })
+        
+        # 🔧 定期清理GPU記憶體
+        if batch_idx % 50 == 0:  # 每50個batch清理一次
+            torch.cuda.empty_cache()
         
         return total_loss
     
@@ -314,22 +428,29 @@ class CardiacDreamerSystem(pl.LightningModule):
             self.log("test_main_task_loss", loss_dict["main_task_loss"], on_step=False, on_epoch=True)
             self.log("test_main_task_mse", mse_main_task, on_step=False, on_epoch=True)
             self.log("test_aux_t2_loss", loss_dict["aux_t2_action_loss"], on_step=False, on_epoch=True)
-        self.test_step_outputs.append({
-            "test_total_loss": total_loss,
-            "test_main_task_mse": mse_main_task,
-            "predicted_action_composed": predicted_composed_action,
-            "target_action_composed_gt": at1_6dof_gt,
-            "a_prime_t2_hat": a_prime_t2_hat,
-            "target_a_t2_prime_gt": at2_6dof_gt
-        })
+        
+        # 🔧 freeze memory
+        if len(self.test_step_outputs) < self.max_test_outputs:
+            self.test_step_outputs.append({
+                "test_total_loss": total_loss.detach().cpu().clone(),
+                "test_main_task_mse": mse_main_task.detach().cpu().clone(),
+                "predicted_action_composed": predicted_composed_action.detach().cpu().clone(),
+                "target_action_composed_gt": at1_6dof_gt.detach().cpu().clone(),
+                "a_prime_t2_hat": a_prime_t2_hat.detach().cpu().clone(),
+                "target_a_t2_prime_gt": at2_6dof_gt.detach().cpu().clone()
+            })
+        
+        # 🔧 freeze memory
+        if batch_idx % 50 == 0:  # clear cache every 50 batches
+            torch.cuda.empty_cache()
         
         return {
-            "test_total_loss": total_loss,
-            "test_main_task_mse": mse_main_task,
-            "predicted_action_composed": predicted_composed_action,
-            "target_action_composed_gt": at1_6dof_gt,
-            "a_prime_t2_hat": a_prime_t2_hat,
-            "target_a_t2_prime_gt": at2_6dof_gt
+            "test_total_loss": total_loss.detach().cpu(),
+            "test_main_task_mse": mse_main_task.detach().cpu(),
+            "predicted_action_composed": predicted_composed_action.detach().cpu(),
+            "target_action_composed_gt": at1_6dof_gt.detach().cpu(),
+            "a_prime_t2_hat": a_prime_t2_hat.detach().cpu(),
+            "target_a_t2_prime_gt": at2_6dof_gt.detach().cpu()
         }
     
     def on_test_epoch_end(self):
@@ -360,27 +481,54 @@ class CardiacDreamerSystem(pl.LightningModule):
                     self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
             except (RuntimeError, AttributeError):
                 self.log(f"test_main_task_mse_{dim_names[i]}", dim_mse)
-        # Clear the outputs for next test epoch
+        
+        # 🔧 freeze memory      
         self.test_step_outputs.clear()
+        del all_preds_composed, all_targets_composed_gt
+        gc.collect()
+        torch.cuda.empty_cache()
 
     def on_validation_epoch_end(self):
-        """Generate scatter plots for validation predictions vs ground truth"""
+        """Collect validation data without generating plots (plots generated at training end)"""
         if not self.validation_step_outputs:
             return
         
-        # Check if trainer is available (not available during standalone testing)
-        try:
-            trainer = self.trainer
-            if trainer is None:
-                raise RuntimeError("Trainer is None")
-        except RuntimeError:
-            print("⚠️  Trainer not available - skipping validation scatter plots generation")
-            self.validation_step_outputs.clear()
-            return
         
-        # Concatenate all predictions and ground truth
+        # only keep the last epoch's data for final plot
+        current_epoch = getattr(self, 'current_epoch', 0)
+        
+        # save the current epoch's data to model attribute (for final plot after training)
         all_preds = torch.cat([out["predicted_action_composed"] for out in self.validation_step_outputs])
         all_targets = torch.cat([out["target_action_composed_gt"] for out in self.validation_step_outputs])
+        
+        # save the latest validation data to model attribute
+        self.latest_validation_data = {
+            "predictions": all_preds.clone(),
+            "targets": all_targets.clone(),
+            "epoch": current_epoch
+        }
+        
+        print(f"[VALIDATION] Validation epoch {current_epoch}: collected {len(all_preds)} samples' predictions")
+        print(f"    will generate scatter plots after training")
+        
+        # 🔧 freeze memory
+        self.validation_step_outputs.clear()
+        del all_preds, all_targets
+        gc.collect()
+        torch.cuda.empty_cache()
+    
+    def generate_final_validation_plots(self, output_dir: str = None):
+        """Generate validation scatter plots at the end of training"""
+        if not hasattr(self, 'latest_validation_data') or self.latest_validation_data is None:
+            print("[WARNING] no validation data available for generating scatter plots")
+            return
+        
+        print("[VALIDATION] generating final validation scatter plots...")
+        
+        # get saved validation data
+        all_preds = self.latest_validation_data["predictions"]
+        all_targets = self.latest_validation_data["targets"]
+        final_epoch = self.latest_validation_data["epoch"]
         
         # Convert to numpy for plotting
         preds_np = all_preds.numpy()
@@ -390,10 +538,16 @@ class CardiacDreamerSystem(pl.LightningModule):
         dim_names = ["X", "Y", "Z", "Roll", "Pitch", "Yaw"]
         
         # Create output directory for plots
-        if hasattr(trainer, 'logger') and hasattr(trainer.logger, 'log_dir'):
-            plots_dir = os.path.join(trainer.logger.log_dir, "validation_scatter_plots")
+        if output_dir is None:
+            if hasattr(self, 'trainer') and self.trainer and hasattr(self.trainer, 'logger'):
+                if hasattr(self.trainer.logger, 'log_dir'):
+                    plots_dir = os.path.join(self.trainer.logger.log_dir, "final_validation_plots")
+                else:
+                    plots_dir = "final_validation_plots"
+            else:
+                plots_dir = "final_validation_plots"
         else:
-            plots_dir = "validation_scatter_plots"
+            plots_dir = os.path.join(output_dir, "final_validation_plots")
         
         os.makedirs(plots_dir, exist_ok=True)
         
@@ -422,7 +576,7 @@ class CardiacDreamerSystem(pl.LightningModule):
             # Set labels and title
             plt.xlabel(f'Ground Truth {dim_name}', fontsize=12)
             plt.ylabel(f'Predicted {dim_name}', fontsize=12)
-            plt.title(f'Validation: Predicted vs Ground Truth - {dim_name}\nCorr: {correlation:.3f}, MSE: {mse:.4f}', fontsize=14)
+            plt.title(f'Final Validation: Predicted vs Ground Truth - {dim_name}\nCorr: {correlation:.3f}, MSE: {mse:.4f}', fontsize=14)
             plt.legend()
             plt.grid(True, alpha=0.3)
             
@@ -430,8 +584,7 @@ class CardiacDreamerSystem(pl.LightningModule):
             plt.axis('equal')
             
             # Save plot
-            current_epoch = getattr(self, 'current_epoch', 0)
-            plot_path = os.path.join(plots_dir, f'validation_scatter_{dim_name.lower()}_epoch_{current_epoch:03d}.png')
+            plot_path = os.path.join(plots_dir, f'final_validation_scatter_{dim_name.lower()}.png')
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             plt.close()
         
@@ -460,21 +613,24 @@ class CardiacDreamerSystem(pl.LightningModule):
             axes[i].grid(True, alpha=0.3)
             axes[i].set_aspect('equal', adjustable='box')
         
-        current_epoch = getattr(self, 'current_epoch', 0)
-        plt.suptitle(f'Validation Predictions vs Ground Truth - Epoch {current_epoch}', fontsize=16)
+        plt.suptitle(f'Final Validation Results - Epoch {final_epoch} ({len(all_preds)} samples)', fontsize=16)
         plt.tight_layout()
         
         # Save combined plot
-        combined_plot_path = os.path.join(plots_dir, f'validation_scatter_combined_epoch_{current_epoch:03d}.png')
+        combined_plot_path = os.path.join(plots_dir, f'final_validation_scatter_combined.png')
         plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"📊 Validation scatter plots saved to: {plots_dir}")
-        print(f"   - Individual plots: validation_scatter_[dimension]_epoch_{current_epoch:03d}.png")
-        print(f"   - Combined plot: validation_scatter_combined_epoch_{current_epoch:03d}.png")
+        print(f"[VALIDATION] final validation scatter plots saved to: {plots_dir}")
+        print(f"   - individual plots: final_validation_scatter_[dimension].png")
+        print(f"   - combined plot: final_validation_scatter_combined.png")
+        print(f"   - based on epoch {final_epoch} with {len(all_preds)} samples")
         
-        # Clear outputs for next epoch
-        self.validation_step_outputs.clear()
+        # 🔧 freeze memory
+        del all_preds, all_targets, preds_np, targets_np
+        self.latest_validation_data = None  # clear saved data
+        gc.collect()
+        torch.cuda.empty_cache()
 
 def get_cardiac_dreamer_system(
     token_type: str = "channel",
@@ -489,7 +645,10 @@ def get_cardiac_dreamer_system(
     use_flash_attn: bool = True,
     in_channels: int = 1, 
     use_pretrained: bool = True,
-    primary_task_only: bool = False  # Added missing parameter
+    primary_task_only: bool = False,  # Added missing parameter
+    freeze_backbone_layers: int = 0,  # Added new parameter
+    scheduler_type: str = "cosine",   # NEW: scheduler type
+    scheduler_config: dict = None     # NEW: scheduler configuration
 ) -> CardiacDreamerSystem:
     return CardiacDreamerSystem(
         token_type=token_type,
@@ -504,7 +663,10 @@ def get_cardiac_dreamer_system(
         use_flash_attn=use_flash_attn,
         in_channels=in_channels, 
         use_pretrained=use_pretrained,
-        primary_task_only=primary_task_only  # Pass the parameter
+        primary_task_only=primary_task_only,  # Pass the parameter
+        freeze_backbone_layers=freeze_backbone_layers,  # Pass the new parameter
+        scheduler_type=scheduler_type,   # Pass the new parameter
+        scheduler_config=scheduler_config  # Pass the new parameter
     )
 
 
@@ -523,6 +685,9 @@ if __name__ == "__main__":
     USE_FLASH_ATTN = False
     IN_CHANNELS = 1
     USE_PRETRAINED = True
+    FREEZE_BACKBONE_LAYERS = 0
+    SCHEDULER_TYPE = "cosine"
+    SCHEDULER_CONFIG = None
 
     system = get_cardiac_dreamer_system(
         token_type=TOKEN_TYPE,
@@ -535,7 +700,11 @@ if __name__ == "__main__":
         smooth_l1_beta=SMOOTH_L1_BETA,
         use_flash_attn=USE_FLASH_ATTN,
         in_channels=IN_CHANNELS,
-        use_pretrained=USE_PRETRAINED
+        use_pretrained=USE_PRETRAINED,
+        primary_task_only=False,
+        freeze_backbone_layers=FREEZE_BACKBONE_LAYERS,
+        scheduler_type=SCHEDULER_TYPE,
+        scheduler_config=SCHEDULER_CONFIG
     ).to(device)
     
     print(f"CardiacDreamerSystem created with SmoothL1Loss (beta={SMOOTH_L1_BETA})")

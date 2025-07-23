@@ -1,0 +1,81 @@
+# TRAINING SET OVERFITTING Configuration
+# Pure focus on minimizing training loss for demo
+
+model:
+  # Model architecture parameters - ENHANCED
+  token_type: "channel"             # Using channel tokens
+  d_model: 768                     # RESTORED to full capacity
+  num_heads: 12                    # RESTORED to full capacity  
+  num_layers: 6                    # RESTORED to full capacity
+  feature_dim: 49                  # Spatial feature dimension (7x7=49)
+  in_channels: 1                   # Input image channels (grayscale)
+  use_pretrained: true             # Use ImageNet pretrained ResNet34
+  
+  # Backbone freezing configuration
+  freeze_backbone_layers: 0       # No freezing - full fine-tuning
+  
+  # Optimization parameters - DESIGNED FOR OVERFITTING
+  lr: 5e-5                        # MODERATE lr to avoid instability but allow fast learning
+  weight_decay: 1e-4              # VERY LOW weight decay to encourage overfitting
+  
+  # Loss function parameters
+  lambda_t2_action: 1.0           # Equal weighting for at1 and at2
+  smooth_l1_beta: 1.0             # Standard beta
+  primary_task_only: false        # Use both at1 and at2 losses for better fitting
+  
+  # Advanced settings - ENABLED
+  use_flash_attn: true            # ENABLED flash attention for memory efficiency
+
+training:
+  # Data loading parameters - OPTIMIZED
+  batch_size: 16                  # INCREASED batch size
+  num_workers: 4                  # INCREASED workers for better data loading
+  
+  # Training schedule - LONGER FOR DEEP OVERFITTING
+  max_epochs: 300                 # MORE epochs for deep overfitting
+  early_stop_patience: 999        # DISABLE early stopping
+  check_val_every_n_epoch: 2     # LESS frequent validation (we don't care about val)
+  
+  # Optimization settings - ENHANCED
+  gradient_clip_val: 1.0          # INCREASED gradient clipping
+  accumulate_grad_batches: 2      # REDUCED since batch_size increased
+  log_every_n_steps: 20           # MORE frequent logging to track training loss
+  
+  # Hardware settings - OPTIMIZED
+  accelerator: "auto"             # Hardware accelerator
+  precision: "32-true"            # FULL precision for maximum accuracy
+  
+# Data configuration - MAXIMIZE TRAINING DATA
+data:
+  # Use MORE data for training
+  train_ratio: 0.9                # 90% for training - MAXIMIZE training data
+  val_ratio: 0.1                  # 10% for minimal validation monitoring
+  test_ratio: 0.0                 # NO test set - all data for training
+  
+  # Data augmentation - DISABLED FOR EXACT FITTING
+  augmentation:
+    enabled: false                # DISABLED - we want to fit exact training samples
+
+# Simple scheduler that only decreases - NO ONECYCLE!
+advanced:
+  scheduler:
+    type: "cosine"                # Simple cosine decay - NO RESTARTS
+    T_max: 300                    # Match max_epochs
+    eta_min: 1e-6                 # Very low minimum LR for fine-tuning
+
+# Experiment tracking
+experiment:
+  # Weights & Biases
+  use_wandb: true                 # Keep WandB for monitoring
+  wandb_project: "cardiac-dreamer-demo"
+  wandb_entity: null
+  
+  # Tags for experiment organization
+  tags:
+    - "training_overfit"          # Pure training set optimization
+    - "channel_tokens"            # Using channel tokens
+    - "no_augmentation"           # No data augmentation
+    - "cosine_decay"              # Simple cosine decay
+    
+  # Notes
+  description: "Configuration designed purely for training set performance - expects heavy overfitting with continuously decreasing training loss" 
