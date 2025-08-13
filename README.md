@@ -1,121 +1,74 @@
-# Echocardio‑ViT Guidance – **Channel‑Token (512 + Action) Branch**
+# Cardiac Dreamer: Real-time Handheld Ultrasound Navigation System Training Module
 
-> **目的**：以 **512 個卷積通道 token + 1 顆 Action‑CLS token** (共 513 token) 進入 Transformer，檢驗「Channel 自注意力」對心臟探頭導航的效果。
+## Overview
+
+Cardiac Dreamer is a deep learning-based training framework designed for real-time handheld ultrasound navigation systems. This project implements a Vision Transformer architecture that enables intelligent probe guidance for echocardiography, helping clinicians achieve optimal ultrasound imaging views through automated 6-DOF (six degrees of freedom) action predictions.
+> Note: This repository focuses on the model training phase and does not include deployment or real-time inference integration.
+
+The system combines ResNet34 feature extraction with a novel Channel Token Transformer architecture, utilizing 512 channel tokens plus one Action-CLS token to process ultrasound images and predict optimal probe movements. This approach addresses the critical challenge of ultrasound probe positioning, which traditionally requires extensive training and experience. The dataset used for training was collected with the invaluable support of [ACO SmartCare](https://acohealthcare.com/zh/about/%E9%97%9C%E6%96%BC/).
 
 
----
 
-## 0 · 目錄 
+![image](doc_image\Readme_image\model_architecture.png)
+> model architecture overview
 
-```text
-├── README.md               # ← 你正在看
-├── Pipfile                 # 依賴管理
-├── Pipfile.lock           
-├── data/                   # raw / processed
-│   ├── raw/                  # 原始數據
-│   └── processed/            # 處理後數據
-├── notebooks/
-│   ├── 01_channel_vis.ipynb  # 通道 token 可視化
-│   └── 90_report.ipynb
-├── configs/
-│   ├── default.yaml          # include model/channel.yaml + train/base
-│   ├── model/
-│   │   └── channel.yaml      # token_type=channel, d=768, L=6, heads=12
-│   └── train/
-│       └── base.yaml
-├── src/
-│   ├── models/
-│   │   ├── backbone.py       # ResNet34 特徵提取器
-│   │   ├── dreamer_channel.py# ★ 512 通道 token Transformer
-│   │   ├── guidance.py       # 简化版MLP (512 → 1024 → 512 → 6)
-│   │   └── system.py         # PyTorch Lightning 系統模組
-│   └── train.py              # 主訓練腳本
-└── outputs/                  # 模型輸出目錄
-    ├── checkpoints/            # 模型檢查點
-    └── logs/                   # TensorBoard 日誌
+
+## Documentation Structure
+
+This repository includes comprehensive documentation organized as follows:
+
+- **[Introduction](docs/01_introduction.md)**: Background, motivation, and research objectives
+- **[System Overview](docs/02_system_overview.md)**: Hardware and software architecture
+- **[Data Management](docs/03_data.md)**: Dataset format and processing pipeline
+- **[Model Architecture](docs/04_model_architecture.md)**: Detailed technical implementation with code explanations
+- **[Setup Guide](docs/05_setup_and_install.md)**: Environment configuration and installation
+- **[Training Guide](docs/06_training_and_inference.md)**: Model training and inference procedures
+- **[Experimental Results](docs/08_results.md)**: Performance analysis and validation results
+- **[Future Work](docs/09_future_work.md)**: Research conclusions and improvement directions
+- **[Contributors](docs/10_contributors.md)**: Project team and acknowledgments
+
+## Requirements
+
+- Python 3.10+
+- PyTorch 2.2.2+
+- CUDA-compatible GPU (recommended)
+- 16GB+ RAM for full dataset training
+- See [Setup Guide](docs/05_setup_and_install.md) for detailed requirements
+
+
+## Model Performance
+
+The system demonstrates strong performance across multiple evaluation metrics:
+
+- Cross-validation Mean Absolute Error (MAE) analysis
+- Patient-level generalization validation
+- 6-DOF action prediction accuracy
+
+See [Experimental Results](docs/08_results.md) for detailed performance analysis.
+
+## Development Workflow
+
+1. **Environment Setup**: Configure Python environment and dependencies
+2. **Data Preparation**: Process ultrasound sequences and action annotations
+3. **Model Training**: Execute training with cross-validation
+4. **Evaluation**: Analyze results and generate performance reports
+
+## Contributing
+
+This project follows standard academic research practices. See [Contributors](docs/10_contributors.md) for team information and contribution guidelines.
+
+## License
+
+This project is developed for academic research purposes. Please refer to the license file for usage terms and conditions.
+
+## Citation
+
+If you use this work in your research, please cite our paper:
+
+```bibtex
+[Citation to be added upon publication]
 ```
 
----
+## Support
 
-## 1 · 資料流
-
-```mermaid
-flowchart TB
-    A[US image 224×224] -->|ResNet34| B[B,512,7,7]
-    B -->|flatten 3rd dim| Tok512[B,512,49]
-    Tok512 -->|permute| Tok[B,512,49]
-    Tok -->|Linear 49→768| TokD[B,512,768]
-    act[6-DoF] -->|Linear 6→768| CLS[B,1,768]
-    CLS --> Concat[Concat]
-    TokD --> Concat
-    Concat -->|"[B,513,768] + pos_emb"| Enc[Transformer L=6 H=12]
-    Enc --> Out[B,513,768]
-    Out -->|index 1-512| Reshape[Reshape]
-    Reshape -->|Linear 768→512| Map[B,512,49]
-    Map -->|view| Map2D[B,512,7,7]
-    Map2D --> GAP[Global AvgPool] --> F[B,512]
-    F --> MLP[Guidance MLP] --> a_hat[Pred 6-DoF]
-```
-
-**重點**
-
-1. `token_type=channel` → **token 數 512**，每 token 向量長 49。
-2. Positional encoding `pos_emb` shape `[1,513,768]`：index 0 給 Action‑CLS，其餘 1‑512 為 channel‑ID。
-3. Self‑Attention 複雜度 ≈ 262 k 關係 → 建議啟用 **Flash‑Attention** 或減 batch。
-4. Guidance MLP 簡化為：`512 → 1024 → 512 → 6`，不再使用查詢向量。
-
----
-
-## 2 · 安裝與執行
-
-### 環境設置
-
-```bash
-# 安裝依賴
-pipenv install
-
-# 進入虛擬環境
-pipenv shell
-```
-
-### 訓練模型
-
-```bash
-# 使用小型數據集進行測試訓練（使用10個樣本）
-python src/train.py --data_dir data/processed --small_subset
-
-# 使用小型數據集進行訓練，並指定輸出目錄
-python src/train.py --data_dir data/processed --small_subset --output_dir outputs/test_run
-
-# 使用完整數據集進行訓練
-python src/train.py --data_dir data/processed --output_dir outputs/full_train
-
-# 自定義訓練參數後訓練
-python src/train.py --data_dir data/processed --output_dir outputs/custom_train
-```
-
-### 參數說明
-
-- `--data_dir`: 指定資料目錄路徑
-- `--output_dir`: 指定輸出目錄路徑（模型檢查點和日誌）
-- `--small_subset`: 使用小型資料集進行測試（僅使用前10個樣本）
-- `--config`: 指定配置檔案路徑（默認為 configs/default.yaml）
-
-訓練過程會輸出到指定的輸出目錄，包含：
-1. 模型檢查點 (`checkpoints/`)
-2. TensorBoard 日誌 (`logs/`)
-
----
-
-## 3 · 主要超參
-
-| key                  | 預設值  | 說明                        |
-| -------------------- | ---- | ------------------------- |
-| `model.d_model`      | 768  | token hidden size         |
-| `model.num_heads`    | 12   | Multi‑head Attention      |
-| `model.num_layers`   | 6    | Encoder blocks            |
-| `model.flash_attn`   | true | 使用 Flash‑Attention 降 VRAM |
-| `train.batch`        | 4    | → 16 GB GPU 建議 2          |
-| `loss.lambda_latent` | 0.2  | Dreamer latent loss 權重    |
-
----
+For questions about installation, usage, or technical implementation, please refer to the documentation or contact the development team through the contributors listed in [Contributors](docs/10_contributors.md).

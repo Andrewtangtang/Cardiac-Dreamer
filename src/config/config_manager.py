@@ -37,7 +37,6 @@ def get_model_config(config_override: Dict = None) -> Dict:
         Model configuration dictionary
     """
     default_config = {
-        "token_type": "channel",
         "d_model": 768,
         "num_heads": 12,
         "num_layers": 6,

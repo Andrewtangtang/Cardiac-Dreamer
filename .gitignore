@@ -24,6 +24,8 @@ build/
 *.swp
 *.swo
 .DS_Store
+docs/documentation_plan.md
+CLAUDE.md
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -48,9 +50,6 @@ logs/
 results/
 runs/
 
-# 數據文件 (取決於具體需求，可能需要保留一些示例數據)
-data/raw/
-data/processed/
 # 保留空白 .gitkeep 文件以保持目錄結構
 !data/raw/.gitkeep
 !data/processed/.gitkeep
@@ -71,9 +70,6 @@ tensorboard/
 /models/
 /checkpoints/ 
 
-## data
-data/processed/
-dataset_analysis/
 
 # 配置和輸出資料夾
 configs/

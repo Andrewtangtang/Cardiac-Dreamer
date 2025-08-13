@@ -45,12 +45,12 @@ training:
   accelerator: "auto"             # Hardware accelerator
   precision: "32-true"            # FULL precision for maximum accuracy
   
-# Data configuration - MAXIMIZE TRAINING DATA
+# Data configuration - EXPLICIT PATIENT LISTS
 data:
-  # Use MORE data for training
-  train_ratio: 0.9                # 90% for training - MAXIMIZE training data
-  val_ratio: 0.1                  # 10% for minimal validation monitoring
-  test_ratio: 0.0                 # NO test set - all data for training
+  patients:
+    train: ["data_0513_01"]
+    val: ["data_0513_02"]
+    test: []
   
   # Data augmentation - DISABLED FOR EXACT FITTING
   augmentation:

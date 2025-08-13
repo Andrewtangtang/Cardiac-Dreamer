@@ -21,7 +21,6 @@ import gc  # 添加垃圾回收
 
 from src.models.backbone import get_resnet34_encoder
 from src.models.dreamer_channel import get_dreamer_channel, pool_features
-from src.models.dreamer_patch import get_dreamer_patch, pool_patch_features
 from src.models.guidance import get_guidance_layer
 from src.utils.transformation_utils import dof6_to_matrix, matrix_to_dof6, matrix_inverse
 
@@ -99,24 +98,14 @@ class CardiacDreamerSystem(pl.LightningModule):
             freeze_layers=freeze_backbone_layers  # Pass the freeze parameter
         )
         
-        if token_type == "channel":
-            self.dreamer = get_dreamer_channel(
-                d_model=d_model,
-                nhead=nhead,
-                num_layers=num_layers,
-                feature_dim=feature_dim, 
-                use_flash_attn=use_flash_attn
-            )
-        elif token_type == "patch":
-            self.dreamer = get_dreamer_patch(
-                d_model=d_model,
-                nhead=nhead,
-                num_layers=num_layers,
-                in_channels=512,  # ResNet output channels
-                use_flash_attn=use_flash_attn
-            )
-        else:
-            raise ValueError(f"Unsupported token_type: {token_type}. Supported types: 'channel', 'patch'")
+        # Channel-token Dreamer only
+        self.dreamer = get_dreamer_channel(
+            d_model=d_model,
+            nhead=nhead,
+            num_layers=num_layers,
+            feature_dim=feature_dim, 
+            use_flash_attn=use_flash_attn
+        )
         
         self.guidance = get_guidance_layer(
             feature_dim=512, 
@@ -174,25 +163,14 @@ class CardiacDreamerSystem(pl.LightningModule):
         
         feature_map_t1 = self.backbone(image_t1)
         
-        if self.token_type == "channel":
-            channel_tokens_t1 = feature_map_t1.reshape(batch_size, 512, -1)
-            
-            predicted_next_feature_tokens_f_hat_t2, _ = self.dreamer(
-                channel_tokens_t1, a_hat_t1_to_t2_gt
-            )
-            
-            pooled_f_hat_t2 = pool_features(predicted_next_feature_tokens_f_hat_t2)
-            
-        elif self.token_type == "patch":
-            # For patch tokens, pass feature map directly
-            predicted_next_feature_tokens_f_hat_t2, _ = self.dreamer(
-                feature_map_t1, a_hat_t1_to_t2_gt
-            )
-            
-            pooled_f_hat_t2 = pool_patch_features(predicted_next_feature_tokens_f_hat_t2)
-            
-        else:
-            raise ValueError(f"Unsupported token_type: {self.token_type}")
+        # Channel-token path
+        channel_tokens_t1 = feature_map_t1.reshape(batch_size, 512, -1)
+        
+        predicted_next_feature_tokens_f_hat_t2, _ = self.dreamer(
+            channel_tokens_t1, a_hat_t1_to_t2_gt
+        )
+        
+        pooled_f_hat_t2 = pool_features(predicted_next_feature_tokens_f_hat_t2)
         
         a_prime_t2_hat = self.guidance(pooled_f_hat_t2)
         
@@ -205,7 +183,7 @@ class CardiacDreamerSystem(pl.LightningModule):
         return {
             "predicted_action_composed": a_t1_prime_composed,
             "a_prime_t2_hat": a_prime_t2_hat,
-            "predicted_next_feature_tokens": predicted_next_feature_tokens_f_hat_t2
+            "predicted_next_feature_tokens": pooled_f_hat_t2
         }
     
     def configure_optimizers(self):
@@ -633,7 +611,6 @@ class CardiacDreamerSystem(pl.LightningModule):
         torch.cuda.empty_cache()
 
 def get_cardiac_dreamer_system(
-    token_type: str = "channel",
     d_model: int = 768,
     nhead: int = 12,
     num_layers: int = 6,
@@ -641,17 +618,17 @@ def get_cardiac_dreamer_system(
     lr: float = 1e-4,
     weight_decay: float = 1e-5,
     lambda_t2_action: float = 1.0,
-    smooth_l1_beta: float = 1.0, # Added beta here
+    smooth_l1_beta: float = 1.0,
     use_flash_attn: bool = True,
     in_channels: int = 1, 
     use_pretrained: bool = True,
-    primary_task_only: bool = False,  # Added missing parameter
-    freeze_backbone_layers: int = 0,  # Added new parameter
-    scheduler_type: str = "cosine",   # NEW: scheduler type
-    scheduler_config: dict = None     # NEW: scheduler configuration
+    primary_task_only: bool = False,
+    freeze_backbone_layers: int = 0,
+    scheduler_type: str = "cosine",
+    scheduler_config: dict = None
 ) -> CardiacDreamerSystem:
     return CardiacDreamerSystem(
-        token_type=token_type,
+        token_type="channel",
         d_model=d_model,
         nhead=nhead,
         num_layers=num_layers,
@@ -659,14 +636,14 @@ def get_cardiac_dreamer_system(
         lr=lr,
         weight_decay=weight_decay,
         lambda_t2_action=lambda_t2_action,
-        smooth_l1_beta=smooth_l1_beta, # Pass beta
+        smooth_l1_beta=smooth_l1_beta,
         use_flash_attn=use_flash_attn,
         in_channels=in_channels, 
         use_pretrained=use_pretrained,
-        primary_task_only=primary_task_only,  # Pass the parameter
-        freeze_backbone_layers=freeze_backbone_layers,  # Pass the new parameter
-        scheduler_type=scheduler_type,   # Pass the new parameter
-        scheduler_config=scheduler_config  # Pass the new parameter
+        primary_task_only=primary_task_only,
+        freeze_backbone_layers=freeze_backbone_layers,
+        scheduler_type=scheduler_type,
+        scheduler_config=scheduler_config
     )
 
 

@@ -63,19 +63,13 @@ def create_enhanced_datasets(args, config, train_config):
     """
     data_dir = args.data_dir
     
-    # Determine patient splits
-    if args.custom_split_no_test:
-        # Use custom split: patients 1-5 as validation, rest as training, no test
-        print("Using custom patient split: patients 1-5 as validation, rest as training, no test set")
-        train_patients, val_patients, test_patients = get_custom_patient_splits_no_test(data_dir)
-    elif args.manual_splits:
-        # Use manually specified patient splits
-        train_patients = args.train_patients.split(',') if args.train_patients else None
-        val_patients = args.val_patients.split(',') if args.val_patients else None  
-        test_patients = args.test_patients.split(',') if args.test_patients else None
-    else:
-        # Automatically detect and split patients
-        train_patients, val_patients, test_patients = get_patient_splits(data_dir)
+    # Require explicit patient lists from config (no ratio-based or auto splits)
+    patients_cfg = (config or {}).get('data', {}).get('patients', {})
+    train_patients = patients_cfg.get('train')
+    val_patients = patients_cfg.get('val')
+    test_patients = patients_cfg.get('test', [])
+    if not train_patients or not val_patients:
+        raise ValueError("Please specify explicit patient folders in config under data.patients.train and data.patients.val (test optional). Example: data: { patients: { train: [data_0513_01], val: [data_0513_02], test: [] } }")
     
     # Create enhanced transforms with augmentation support
     train_transform = create_augmented_transform(config)
@@ -87,7 +81,7 @@ def create_enhanced_datasets(args, config, train_config):
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
     
-    print("Creating enhanced datasets with augmentation support...")
+    print("Creating enhanced datasets with explicit patient lists...")
     
     # Create datasets using the cross-patient dataset
     train_dataset = CrossPatientTransitionsDataset(
@@ -96,7 +90,7 @@ def create_enhanced_datasets(args, config, train_config):
         split="train",
         train_patients=train_patients,
         val_patients=val_patients,
-        test_patients=test_patients,
+        test_patients=test_patients if test_patients else [],
         small_subset=False,
         normalize_actions=True
     )
@@ -107,12 +101,12 @@ def create_enhanced_datasets(args, config, train_config):
         split="val",
         train_patients=train_patients,
         val_patients=val_patients,
-        test_patients=test_patients,
+        test_patients=test_patients if test_patients else [],
         small_subset=False,
         normalize_actions=True
     )
     
-    # Create test dataset only if test patients exist
+    # Create test dataset only if explicit test patients exist
     if test_patients:
         test_dataset = CrossPatientTransitionsDataset(
             data_dir=data_dir,
@@ -126,7 +120,7 @@ def create_enhanced_datasets(args, config, train_config):
         )
     else:
         test_dataset = None
-        print("No test dataset created (custom split with no test set)")
+        print("No test dataset (data.patients.test not provided or empty)")
     
     return train_dataset, val_dataset, test_dataset, train_transform
 
@@ -182,7 +176,6 @@ def create_enhanced_model(model_config, config):
     
     # Create base model
     model = get_cardiac_dreamer_system(
-        token_type=model_config["token_type"],
         d_model=model_config["d_model"],
         nhead=model_config["num_heads"],
         num_layers=model_config["num_layers"],
@@ -194,8 +187,8 @@ def create_enhanced_model(model_config, config):
         use_flash_attn=model_config["use_flash_attn"],
         primary_task_only=model_config["primary_task_only"],
         freeze_backbone_layers=model_config.get("freeze_backbone_layers", 0),
-        scheduler_type=scheduler_type,    # NEW: pass scheduler type
-        scheduler_config=scheduler_params  # NEW: pass scheduler parameters
+        scheduler_type=scheduler_type,
+        scheduler_config=scheduler_params
     )
     
     # Print model info

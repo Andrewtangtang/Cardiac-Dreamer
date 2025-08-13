@@ -293,7 +293,6 @@ def create_cv_model(model_config, config, fold_idx):
     
     # Create model
     model = get_cardiac_dreamer_system(
-        token_type=model_config["token_type"],
         d_model=model_config["d_model"],
         nhead=model_config["num_heads"],
         num_layers=model_config["num_layers"],
