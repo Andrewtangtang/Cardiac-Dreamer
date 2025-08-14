@@ -9,7 +9,7 @@ The system combines ResNet34 feature extraction with a novel Channel Token Trans
 
 
 
-![image](doc_image\Readme_image\model_architecture.png)
+![image](doc_image/Readme_image/model_architecture.png)
 > model architecture overview
 
 
