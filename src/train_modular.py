@@ -433,22 +433,11 @@ def main(args):
 
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Enhanced Cardiac Ultrasound Guidance Model Training")
+    parser = argparse.ArgumentParser(description="Cardiac Ultrasound Guidance Model Training")
     parser.add_argument("--data_dir", type=str, default="data/processed", help="Data directory path")
     parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory path")
-    parser.add_argument("--config", type=str, help="Configuration file path (recommended)")
-    
-    # Patient split arguments
-    parser.add_argument("--manual_splits", action="store_true", help="Use manual patient splits instead of automatic")
-    parser.add_argument("--train_patients", type=str, help="Comma-separated list of training patient IDs")
-    parser.add_argument("--val_patients", type=str, help="Comma-separated list of validation patient IDs")
-    parser.add_argument("--test_patients", type=str, help="Comma-separated list of test patient IDs")
-    
-    # Resume training
+    parser.add_argument("--config", type=str, required=True, help="Configuration file path (required)")
     parser.add_argument("--resume_from_checkpoint", type=str, help="Path to checkpoint to resume training from")
-    
-    # Custom split arguments
-    parser.add_argument("--custom_split_no_test", action="store_true", help="Use custom split: patients 1-5 as validation, rest as training, no test set")
     
     args = parser.parse_args()
     

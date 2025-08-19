@@ -384,10 +384,7 @@ experiment:
 - Transform pipeline: [`create_augmented_transform`](../src/data/augmentation.py)
   - Base: `Resize(224,224) → ToTensor() → Normalize(mean=[0.5], std=[0.5])`
   - Optional augmentation if `data.augmentation.enabled=true`: rotation, brightness, contrast, Gaussian noise.
-- Splitting logic in [`src/train_modular.py`](../src/train_modular.py)
-  - Default: automatic patient splits via `get_patient_splits(...)`.
-  - Optional custom split: `--custom_split_no_test` uses `get_custom_patient_splits_no_test(...)`.
-  - Optional manual lists: `--manual_splits` with `--train_patients`, `--val_patients`, `--test_patients`.
+- Patient splitting: explicit lists only via YAML configuration (`data.patients.train/val/test`).
 
 #### DataLoaders
 Constructed by [`create_data_loaders`](../src/training/data_loaders.py):
@@ -428,11 +425,105 @@ From [`src/train_modular.py`](../src/train_modular.py):
 7) Train/evaluate: `trainer.fit(...)` → generate final validation plots via `model.generate_final_validation_plots(...)` → optional `trainer.test(...)` if a test loader is present → save checkpoints and summaries.
 
 #### Command examples
-- Single-run training (recommended during development):
+- Single-run training:
 ```bash
 python -m src.train_modular --data_dir data/processed --output_dir outputs --config configs/channel_token.yaml
 ```
+- Resume from checkpoint:
+```bash
+python -m src.train_modular --data_dir data/processed --output_dir outputs --config configs/channel_token.yaml --resume_from_checkpoint outputs/run_xyz/checkpoints/best_model.ckpt
+```
 - Notes
+  - Configuration file is required (contains explicit patient lists).
   - Ensure your dataset follows the structure in [`docs/03_data.md`](../docs/03_data.md) and that images are 224×224 grayscale.
-  - Explicit patient lists are required to prevent data leakage; ratio-based or automatic splits are not supported in the modular pipeline.
+  - Explicit patient lists are required to prevent data leakage; ratio-based or automatic splits are not supported.
   - `token_type` fields in older configs are ignored; the current pipeline is Channel-Token only.
+
+### train_cross_validation.py
+
+The `train_cross_validation.py` script implements patient-level 5-fold cross-validation. Each predefined patient group serves as validation once, while the remaining groups form the training set. Implementation: [`src/train_cross_validation.py`](../src/train_cross_validation.py).
+
+#### Purpose
+- Evaluate generalization with strict patient separation by rotating validation across predefined patient groups.
+
+#### Patient grouping and splits
+- Five groups are defined in code and used to construct folds:
+```46:54:src/train_cross_validation.py
+def get_patient_groups():
+    """Define the 5 patient groups for cross-validation"""
+    return {
+        'patient1': ['data_0513_01', 'data_0513_02', 'data_0513_03', 'data_0513_04', 'data_0513_05'],
+        'patient2': ['data_0513_06', 'data_0513_07', 'data_0513_08', 'data_0513_09'],
+        'patient3': ['data_0513_11', 'data_0513_12', 'data_0513_13', 'data_0513_14'],
+        'patient4': ['data_0513_16', 'data_0513_17', 'data_0513_18', 'data_0513_19', 'data_0513_20','data_0513_21'],
+        'patient5': ['data_0513_22', 'data_0513_23', 'data_0513_24', 'data_0513_25', 'data_0513_26']
+    }
+```
+- For fold k, the validation set is the k-th group; training set is the union of the remaining groups.
+- No test set is used in CV; metrics are aggregated across validation folds and summarized.
+
+#### Inputs/Outputs
+- Inputs (CLI): `--data_dir`, `--output_dir`, `--config` (required).
+- Uses the same dataset and transform utilities as the modular pipeline, but builds splits from the predefined groups.
+- Outputs per fold: checkpoints, logs, plots, and statistics. A final report is generated across all folds.
+
+#### Training setup
+- Fixed to 100 epochs per fold; all other trainer options are loaded from `training` section of the YAML.
+- Scheduler/optimizer/model settings are read from the same YAML sections as single-run training.
+- Logging integrates with Weights & Biases if enabled in the YAML; tags are adjusted per fold.
+
+#### Command example
+```bash
+python -m src.train_cross_validation --data_dir data/processed --output_dir outputs --config configs/channel_token_cv.yaml
+```
+
+#### Outputs
+- Cross-validation output directory contains:
+  - `cv_summary_report.json`: aggregate metrics across folds
+  - `cv_detailed_results.csv`: per-fold results
+  - `cv_results_visualization.png`: performance plots
+  - `patient_group_mapping.png`: fold/group overview
+  - `fold_*/`: one directory per fold with checkpoints, logs, `fold_dataset_statistics.png`, and `fold_statistics.json`
+
+
+### run_cross_validation.py
+
+The `run_cross_validation.py` script is a convenience launcher for 5-fold CV. It validates paths, prints the assembled command, asks for confirmation, and then executes the cross-validation script. Implementation: [`run_cross_validation.py`](../run_cross_validation.py).
+
+#### Purpose
+- Provide a simple entry point to start CV with sensible defaults, ensuring required files exist.
+
+#### Key behavior
+- Builds the command to run the CV trainer:
+```49:56:run_cross_validation.py
+# Construct command
+cmd = [
+    sys.executable,
+    "src/train_cross_validation.py",
+    "--data_dir", data_dir,
+    "--output_dir", output_dir,
+    "--config", config_file
+]
+```
+- Asks for user confirmation before launching (long-running job):
+```61:66:run_cross_validation.py
+# Ask for confirmation
+response = input(" Start cross-validation? This will take several hours. (y/N): ")
+if response.lower() not in ['y', 'yes']:
+    print(" Cross-validation cancelled by user.")
+    return
+```
+
+#### Command example
+- From repository root:
+```bash
+python run_cross_validation.py
+```
+- If non-interactive environments are preferred, call the trainer directly:
+```bash
+python -m src.train_cross_validation --data_dir data/processed --output_dir outputs --config configs/channel_token_cv.yaml
+```
+
+#### Notes
+- Defaults: `data_dir="data/processed"`, `output_dir="outputs"`, `config_file="configs/channel_token_cv.yaml"`.
+- The launcher requires a keypress; for unattended runs, invoke `src/train_cross_validation.py` directly as shown above.
