@@ -22,10 +22,9 @@ This repository includes comprehensive documentation organized as follows:
 - **[Data Management](docs/03_data.md)**: Dataset format and processing pipeline
 - **[Model Architecture](docs/04_model_architecture.md)**: Detailed technical implementation with code explanations
 - **[Setup Guide](docs/05_setup_and_install.md)**: Environment configuration and installation
-- **[Training Guide](docs/06_training_and_inference.md)**: Model training and inference procedures
-- **[Experimental Results](docs/08_results.md)**: Performance analysis and validation results
-- **[Future Work](docs/09_future_work.md)**: Research conclusions and improvement directions
-- **[Contributors](docs/10_contributors.md)**: Project team and acknowledgments
+- **[Experimental Results](docs/06_results.md)**: Performance analysis and validation results
+- **[Future Work](docs/07_future_work.md)**: Research conclusions and improvement directions
+- **[Contributors](docs/08_contributors.md)**: Project team and acknowledgments
 
 ## Requirements
 
@@ -44,7 +43,7 @@ The system demonstrates strong performance across multiple evaluation metrics:
 - Patient-level generalization validation
 - 6-DOF action prediction accuracy
 
-See [Experimental Results](docs/08_results.md) for detailed performance analysis.
+See [Experimental Results](docs/06_results.md) for detailed performance analysis.
 
 ## Development Workflow
 
@@ -55,7 +54,7 @@ See [Experimental Results](docs/08_results.md) for detailed performance analysis
 
 ## Contributing
 
-This project follows standard academic research practices. See [Contributors](docs/10_contributors.md) for team information and contribution guidelines.
+This project follows standard academic research practices. See [Contributors](docs/08_contributors.md) for team information and contribution guidelines.
 
 ## License
 
@@ -71,4 +70,4 @@ If you use this work in your research, please cite our paper:
 
 ## Support
 
-For questions about installation, usage, or technical implementation, please refer to the documentation or contact the development team through the contributors listed in [Contributors](docs/10_contributors.md).
+For questions about installation, usage, or technical implementation, please refer to the documentation or contact the development team through the contributors listed in [Contributors](docs/08_contributors.md).
