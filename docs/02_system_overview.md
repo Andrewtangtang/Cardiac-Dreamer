@@ -4,7 +4,7 @@
 
 The Cardiac Dreamer training system is a four-stage pipeline that processes ultrasound images to predict optimal 6-DOF probe adjustments. Each stage transforms the input toward the final guidance output.
 
-![image](..\doc_image\doc2_image\model_architecture.png)
+![image](../doc_image/doc2_image/model_architecture.png)
 
 *Figure: End-to-end architecture with the four processing stages*
 
