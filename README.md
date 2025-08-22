@@ -2,10 +2,13 @@
 
 ## Overview
 
-Cardiac Dreamer is a deep learning-based training framework designed for real-time handheld ultrasound navigation systems. This project implements a Vision Transformer architecture that enables intelligent probe guidance for echocardiography, helping clinicians achieve optimal ultrasound imaging views through automated 6-DOF (six degrees of freedom) action predictions.
+Cardiac Dreamer is a deep learning-based training framework designed for real-time handheld ultrasound navigation systems. This project implements a concrete realization of the "Cardiac Copilot" system architecture proposed in the research paper ["Cardiac Copilot: Automatic Probe Guidance for Echocardiography with World Model"](https://arxiv.org/abs/2406.13165) (MICCAI 2024).
+
 > Note: This repository focuses on the model training phase and does not include deployment or real-time inference integration.
 
-The system combines ResNet34 feature extraction with a novel Channel Token Transformer architecture, utilizing 512 channel tokens plus one Action-CLS token to process ultrasound images and predict optimal probe movements. This approach addresses the critical challenge of ultrasound probe positioning, which traditionally requires extensive training and experience. The dataset used for training was collected with the invaluable support of [ACO SmartCare](https://acohealthcare.com/zh/about/%E9%97%9C%E6%96%BC/).
+The system combines ResNet34 feature extraction with a novel Channel Token Transformer architecture, utilizing 512 channel tokens plus one Action-CLS token to process ultrasound images and predict optimal probe movements. This implementation follows the data-driven world model approach described in the original paper, enabling intelligent probe guidance for echocardiography and helping clinicians achieve optimal ultrasound imaging views through automated 6-DOF (six degrees of freedom) action predictions.
+
+This approach addresses the critical challenge of ultrasound probe positioning, which traditionally requires extensive training and experience. The dataset used for training was collected with the invaluable support of [ACO SmartCare](https://acohealthcare.com/zh/about/%E9%97%9C%E6%96%BC/).
 
 
 
@@ -23,8 +26,6 @@ This repository includes comprehensive documentation organized as follows:
 - **[Model Architecture](docs/04_model_architecture.md)**: Detailed technical implementation with code explanations
 - **[Setup Guide](docs/05_setup_and_install.md)**: Environment configuration and installation
 - **[Experimental Results](docs/06_results.md)**: Performance analysis and validation results
-- **[Future Work](docs/07_future_work.md)**: Research conclusions and improvement directions
-- **[Contributors](docs/08_contributors.md)**: Project team and acknowledgments
 
 ## Requirements
 
@@ -37,13 +38,24 @@ This repository includes comprehensive documentation organized as follows:
 
 ## Model Performance
 
-The system demonstrates strong performance across multiple evaluation metrics:
+### Result Overview
 
-- Cross-validation Mean Absolute Error (MAE) analysis
-- Patient-level generalization validation
-- 6-DOF action prediction accuracy
+Our 5-fold cross-validation evaluation demonstrates the model's capability in 6-DOF ultrasound probe guidance:
 
-See [Experimental Results](docs/06_results.md) for detailed performance analysis.
+![6-Axis Average MAE](results/figures/6axis_average_mae.png)
+
+**Translation Performance (Strong)**:
+- X-axis: 3.64mm MAE
+- Y-axis: 5.36mm MAE  
+- Z-axis: 3.52mm MAE
+
+**Rotation Performance (Moderate)**:
+- Roll: 25.2° MAE
+- Yaw: 21.4° MAE
+- Pitch: 6.1° MAE
+
+
+See [Experimental Results](docs/06_results.md) for detailed performance analysis, validation methodology, and demo videos.
 
 ## Development Workflow
 
@@ -52,22 +64,25 @@ See [Experimental Results](docs/06_results.md) for detailed performance analysis
 3. **Model Training**: Execute training with cross-validation
 4. **Evaluation**: Analyze results and generate performance reports
 
-## Contributing
-
-This project follows standard academic research practices. See [Contributors](docs/08_contributors.md) for team information and contribution guidelines.
-
 ## License
 
 This project is developed for academic research purposes. Please refer to the license file for usage terms and conditions.
 
 ## Citation
 
-If you use this work in your research, please cite our paper:
+If you use this work in your research, please cite the original paper:
 
 ```bibtex
-[Citation to be added upon publication]
+@article{jiang2024cardiac,
+  title={Cardiac Copilot: Automatic Probe Guidance for Echocardiography with World Model},
+  author={Jiang, Haojun and Sun, Zhenguo and Jia, Ning and Li, Meng and Sun, Yu and Luo, Shaqi and Song, Shiji and Huang, Gao},
+  journal={arXiv preprint arXiv:2406.13165},
+  year={2024}
+}
 ```
+
+This implementation is based on the research presented in: [Cardiac Copilot: Automatic Probe Guidance for Echocardiography with World Model](https://arxiv.org/abs/2406.13165) (MICCAI 2024).
 
 ## Support
 
-For questions about installation, usage, or technical implementation, please refer to the documentation or contact the development team through the contributors listed in [Contributors](docs/08_contributors.md).
+For questions about installation, usage, or technical implementation, please refer to the documentation sections listed above.

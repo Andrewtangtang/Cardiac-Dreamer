@@ -47,12 +47,7 @@ logs/
 *.log
 *.out
 *.err
-results/
 runs/
-
-# 保留空白 .gitkeep 文件以保持目錄結構
-!data/raw/.gitkeep
-!data/processed/.gitkeep
 
 # Cursor 編輯器特定文件
 .cursor/
@@ -74,7 +69,6 @@ tensorboard/
 # 配置和輸出資料夾
 configs/
 outputs/
-model_evaluation_results_last/
 
 # 預測結果資料夾 (新增)
 output/
