@@ -44,15 +44,15 @@ Our 5-fold cross-validation evaluation demonstrates the model's capability in 6-
 
 ![6-Axis Average MAE](results/figures/6axis_average_mae.png)
 
-**Translation Performance (Strong)**:
-- X-axis: 3.64mm MAE
-- Y-axis: 5.36mm MAE  
-- Z-axis: 3.52mm MAE
+**Translation Performance**:
+- X-axis: 3.64mm 
+- Y-axis: 5.36mm   
+- Z-axis: 3.52mm 
 
-**Rotation Performance (Moderate)**:
-- Roll: 25.2° MAE
-- Yaw: 21.4° MAE
-- Pitch: 6.1° MAE
+**Rotation Performance**:
+- Roll: 25.2° 
+- Yaw: 21.4° 
+- Pitch: 6.1° 
 
 
 See [Experimental Results](docs/06_results.md) for detailed performance analysis, validation methodology, and demo videos.
