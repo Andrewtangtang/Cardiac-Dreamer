@@ -84,7 +84,6 @@ tmp/
 
 # 大型資料檔案
 *.csv
-*.json
 !**/config.json
 !**/metadata.json
 
