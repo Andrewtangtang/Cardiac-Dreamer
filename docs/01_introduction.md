@@ -12,7 +12,7 @@ The primary objective is to train a model capable of predicting the optimal 6-DO
 
 To achieve this, we design a **Target-oriented Guidance Framework** that processes the current ultrasound image and outputs predicted motion parameters, guiding probe adjustments toward the target view.
 
-![image](..\doc_image\doc1_image\guidance_loop.png)
+![image](../doc_image/doc1_image/guidance_loop.png)
 
 *Figure: Overview of the target-oriented guidance loop for probe navigation.*
 
