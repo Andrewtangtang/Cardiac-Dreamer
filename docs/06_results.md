@@ -20,7 +20,7 @@ def get_patient_groups():
     }
 ```
 - **Metrics**:
-  - Primary: Validation loss (Smooth L1) per fold, calculated as the sum of main task loss (at1 prediction) and auxiliary task loss (at1′ prediction)
+  - Primary: Validation loss (Smooth L1) per fold, calculated as the sum of main task loss (at1 and at1 prediction).
   - Secondary: Mean Absolute Error (MAE) for each of the 6 axes (X, Y, Z translation and Roll, Pitch, Yaw rotation)
 
 - **Inference model architecture**:
